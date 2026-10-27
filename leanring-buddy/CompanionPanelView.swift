@@ -2,716 +2,365 @@
 //  CompanionPanelView.swift
 //  leanring-buddy
 //
-//  The SwiftUI content hosted inside the menu bar panel. Shows the companion
-//  voice status, push-to-talk shortcut, and quick settings. Designed to feel
-//  like Loom's recording panel — dark, rounded, minimal, and special.
+//  The SwiftUI content of the menu bar panel: what Clicky is doing right now,
+//  the two shortcuts, any background tasks, and a few settings. When setup
+//  isn't finished (Claude Code missing or signed out, a permission off), a
+//  single card at the top says what's wrong and opens setup to fix it.
 //
 
-import AVFoundation
 import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
-    @State private var emailInput: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
-            Divider()
-                .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 12)
 
-            permissionsCopySection
-                .padding(.top, 16)
+            if let setupProblem {
+                setupProblemCard(setupProblem)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
+            } else {
+                shortcutHints
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 14)
+            }
+
+            if !companionManager.backgroundAgentJobs.isEmpty {
+                hairline
+                backgroundAgentJobsSection
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+            }
+
+            hairline
+            settingsSection
                 .padding(.horizontal, 16)
+                .padding(.vertical, 8)
 
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                modelPickerRow
-                    .padding(.horizontal, 16)
-            }
-
-            if !companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                settingsSection
-                    .padding(.horizontal, 16)
-            }
-
-            if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                startButton
-                    .padding(.horizontal, 16)
-            }
-
-            // Show Clicky toggle — hidden for now
-            // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            //     Spacer()
-            //         .frame(height: 16)
-            //
-            //     showClickyCursorToggleRow
-            //         .padding(.horizontal, 16)
-            // }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                dmFarzaButton
-                    .padding(.horizontal, 16)
-            }
-
-            Spacer()
-                .frame(height: 12)
-
-            Divider()
-                .background(DS.Colors.borderSubtle)
-                .padding(.horizontal, 16)
-
+            hairline
             footerSection
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
         }
         .frame(width: 320)
         .background(panelBackground)
     }
 
+    private var hairline: some View {
+        Rectangle()
+            .fill(DS.Colors.hairline)
+            .frame(height: 1)
+    }
+
     // MARK: - Header
 
     private var panelHeader: some View {
-        HStack {
-            HStack(spacing: 8) {
-                // Animated status dot
+        HStack(spacing: 9) {
+            CompanionCursorMark(markSize: 18)
+
+            Text(AppIdentity.displayName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(DS.Colors.textPrimary)
+
+            Spacer()
+
+            HStack(spacing: 6) {
                 Circle()
                     .fill(statusDotColor)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: statusDotColor.opacity(0.6), radius: 4)
-
-                Text("Clicky")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(DS.Colors.textPrimary)
+                    .frame(width: 7, height: 7)
+                    .shadow(color: statusDotColor.opacity(0.6), radius: 3)
+                Text(statusText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
             }
+            .animation(.easeOut(duration: 0.15), value: statusText)
+        }
+    }
 
-            Spacer()
+    private var statusText: String {
+        if setupProblem != nil { return "Needs setup" }
+        switch companionManager.voiceState {
+        case .idle: return "Ready"
+        case .listening: return "Listening"
+        case .processing: return "Thinking"
+        case .responding: return "Answering"
+        }
+    }
 
-            Text(statusText)
-                .font(.system(size: 12, weight: .medium))
+    private var statusDotColor: Color {
+        if setupProblem != nil { return DS.Colors.nextStepInk }
+        switch companionManager.voiceState {
+        case .idle: return DS.Colors.doneInk
+        case .listening, .processing, .responding: return DS.Colors.companionBlue
+        }
+    }
+
+    // MARK: - Setup problems
+
+    private struct SetupProblem {
+        let title: String
+        let explanation: String
+    }
+
+    /// The one thing standing between the user and a working Clicky, if any.
+    private var setupProblem: SetupProblem? {
+        switch companionManager.claudeCodeSetupState {
+        case .notInstalled:
+            return SetupProblem(title: "Claude Code isn't installed", explanation: "\(AppIdentity.displayName) needs it to answer you.")
+        case .notSignedIn:
+            return SetupProblem(title: "Claude Code isn't signed in", explanation: "Sign in with your Claude account to get answers.")
+        case .problem(let problemDescription):
+            return SetupProblem(title: "Claude Code isn't responding", explanation: problemDescription)
+        case .checking, .ready:
+            break
+        }
+        if !companionManager.allPermissionsGranted {
+            return SetupProblem(title: "Some access is off", explanation: "\(AppIdentity.displayName) can't hear you or see your screen until it's back on.")
+        }
+        if !companionManager.hasCompletedOnboarding {
+            return SetupProblem(title: "Finish setting up", explanation: "A few quick steps and it's ready.")
+        }
+        return nil
+    }
+
+    private func setupProblemCard(_ setupProblem: SetupProblem) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(setupProblem.title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundColor(DS.Colors.textPrimary)
+                Text(setupProblem.explanation)
+                    .font(.system(size: 11.5))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button("Open setup") { openSetup() }
+                .buttonStyle(CompanionPrimaryButtonStyle())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(DS.Colors.nextStepInk.opacity(0.09))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(DS.Colors.nextStepInk.opacity(0.28), lineWidth: 1)
+        )
+    }
+
+    private func openSetup() {
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        NotificationCenter.default.post(name: .clickyOpenSetup, object: nil)
+    }
+
+    // MARK: - Shortcuts
+
+    private var shortcutHints: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            shortcutHintRow(keys: ShortcutKeycaps.talkKeys, explanation: "Hold to talk about your screen")
+            shortcutHintRow(keys: ShortcutKeycaps.dictateKeys, explanation: "Hold to type with your voice")
+        }
+    }
+
+    private func shortcutHintRow(keys: [(symbol: String, name: String)], explanation: String) -> some View {
+        HStack(spacing: 10) {
+            ShortcutKeycaps(keys: keys, keycapSize: .compact)
+                .frame(width: 72, alignment: .leading)
+            Text(explanation)
+                .font(.system(size: 12.5))
+                .foregroundColor(DS.Colors.textSecondary)
+        }
+    }
+
+    // MARK: - Background Tasks
+
+    /// The latest background tasks, with what each is doing now or what it made.
+    private var backgroundAgentJobsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Background tasks")
+                .font(.system(size: 11.5, weight: .semibold))
                 .foregroundColor(DS.Colors.textTertiary)
 
-            Button(action: {
-                NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-            }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(width: 20, height: 20)
-                    .background(
-                        Circle()
-                            .fill(Color.white.opacity(0.08))
-                    )
+            ForEach(companionManager.backgroundAgentJobs.prefix(4)) { backgroundAgentJob in
+                backgroundAgentJobRow(backgroundAgentJob)
             }
-            .buttonStyle(.plain)
-            .pointerCursor()
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-    }
-
-    // MARK: - Permissions Copy
-
-    @ViewBuilder
-    private var permissionsCopySection: some View {
-        if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Text("Hold Control+Option to talk.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else if companionManager.allPermissionsGranted && !companionManager.hasSubmittedEmail {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Drop your email to get started.")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-                Text("If I keep building this, I'll keep you in the loop.")
-                    .font(.system(size: 11))
-                    .foregroundColor(DS.Colors.textTertiary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else if companionManager.allPermissionsGranted {
-            Text("You're all set. Hit Start to meet Clicky.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else if companionManager.hasCompletedOnboarding {
-            // Permissions were revoked after onboarding — tell user to re-grant
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Permissions needed")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                Text("Some permissions were revoked. Grant all four below to keep using Clicky.")
-                    .font(.system(size: 11))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Hi, I'm Farza. This is Clicky.")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                Text("A side project I made for fun to help me learn stuff as I use my computer.")
-                    .font(.system(size: 11))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text("Nothing runs in the background. Clicky will only take a screenshot when you press the hot key. So, you can give that permission in peace. If you are still sus, eh, I can't do much there champ.")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    // MARK: - Email + Start Button
-
-    @ViewBuilder
-    private var startButton: some View {
-        if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            if !companionManager.hasSubmittedEmail {
-                VStack(spacing: 8) {
-                    TextField("Enter your email", text: $emailInput)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .foregroundColor(DS.Colors.textPrimary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                .fill(Color.white.opacity(0.08))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                                .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-                        )
-
-                    Button(action: {
-                        companionManager.submitEmail(emailInput)
-                    }) {
-                        Text("Submit")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(DS.Colors.textOnAccent)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(
-                                RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
-                                    .fill(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                          ? DS.Colors.accent.opacity(0.4)
-                                          : DS.Colors.accent)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                    .disabled(emailInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    private func backgroundAgentJobRow(_ backgroundAgentJob: BackgroundAgentJob) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Group {
+                if backgroundAgentJob.isRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.55)
+                } else if backgroundAgentJob.isDone {
+                    // The engine's check is sized for the screen, so it's drawn
+                    // at full size and scaled down to fit the row
+                    InkMarkView(mark: .check, inkColor: .green, seed: UInt64(abs(backgroundAgentJob.id.hashValue % 1000)))
+                        .frame(width: 34, height: 30)
+                        .scaleEffect(0.55)
+                        .frame(width: 18, height: 16)
+                } else {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
                 }
-            } else {
-                Button(action: {
-                    companionManager.triggerOnboarding()
-                }) {
-                    Text("Start")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
-                                .fill(DS.Colors.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
             }
+            .frame(width: 18, height: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(backgroundAgentJob.title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .lineLimit(1)
+
+                Text(backgroundAgentJobSubtitle(backgroundAgentJob))
+                    .font(.system(size: 11.5))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 4)
+
+            Button(backgroundAgentJob.isRunning ? "Stop" : "Open") {
+                if backgroundAgentJob.isRunning {
+                    companionManager.stopBackgroundAgentJob(backgroundAgentJob)
+                } else {
+                    companionManager.openBackgroundAgentJobOutput(backgroundAgentJob)
+                }
+            }
+            .buttonStyle(CompanionQuietButtonStyle())
         }
     }
 
-    // MARK: - Permissions
+    private func backgroundAgentJobSubtitle(_ backgroundAgentJob: BackgroundAgentJob) -> String {
+        switch backgroundAgentJob.status {
+        case "running":
+            return backgroundAgentJob.latestProgress ?? "Getting started…"
+        case "done":
+            return backgroundAgentJob.resultHeadline ?? "Done"
+        case "stopped":
+            return "Stopped"
+        case "interrupted":
+            return "Interrupted when \(AppIdentity.displayName) quit"
+        default:
+            return backgroundAgentJob.resultHeadline ?? "Didn't finish"
+        }
+    }
+
+    // MARK: - Settings
 
     private var settingsSection: some View {
-        VStack(spacing: 2) {
-            Text("PERMISSIONS")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundColor(DS.Colors.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 6)
-
-            microphonePermissionRow
-
-            accessibilityPermissionRow
-
-            screenRecordingPermissionRow
-
-            if companionManager.hasScreenRecordingPermission {
-                screenContentPermissionRow
-            }
-
-        }
-    }
-
-    private var accessibilityPermissionRow: some View {
-        let isGranted = companionManager.hasAccessibilityPermission
-        return HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "hand.raised")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
-                    .frame(width: 16)
-
-                Text("Accessibility")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(DS.Colors.success)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.success)
-                }
-            } else {
-                HStack(spacing: 6) {
-                    Button(action: {
-                        // Triggers the system accessibility prompt (AXIsProcessTrustedWithOptions)
-                        // on first attempt, then opens System Settings on subsequent attempts.
-                        WindowPositionManager.requestAccessibilityPermission()
-                    }) {
-                        Text("Grant")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(DS.Colors.textOnAccent)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(
-                                Capsule()
-                                    .fill(DS.Colors.accent)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-
-                    Button(action: {
-                        // Reveals the app in Finder so the user can drag it into
-                        // the Accessibility list if it doesn't appear automatically
-                        // (common with unsigned dev builds).
-                        WindowPositionManager.revealAppInFinder()
-                        WindowPositionManager.openAccessibilitySettings()
-                    }) {
-                        Text("Find App")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(DS.Colors.textSecondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(
-                                Capsule()
-                                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.8)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                }
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
-    private var screenRecordingPermissionRow: some View {
-        let isGranted = companionManager.hasScreenRecordingPermission
-        return HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "rectangle.dashed.badge.record")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
-                    .frame(width: 16)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Screen Recording")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(DS.Colors.textSecondary)
-
-                    Text(isGranted
-                         ? "Only takes a screenshot when you use the hotkey"
-                         : "Quit and reopen after granting")
-                        .font(.system(size: 10))
-                        .foregroundColor(DS.Colors.textTertiary)
-                }
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(DS.Colors.success)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.success)
-                }
-            } else {
-                Button(action: {
-                    // Triggers the native macOS screen recording prompt on first
-                    // attempt (auto-adds app to the list), then opens System Settings
-                    // on subsequent attempts.
-                    WindowPositionManager.requestScreenRecordingPermission()
-                }) {
-                    Text("Grant")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(DS.Colors.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
-    private var screenContentPermissionRow: some View {
-        let isGranted = companionManager.hasScreenContentPermission
-        return HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "eye")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
-                    .frame(width: 16)
-
-                Text("Screen Content")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(DS.Colors.success)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.success)
-                }
-            } else {
-                Button(action: {
-                    companionManager.requestScreenContentPermission()
-                }) {
-                    Text("Grant")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(DS.Colors.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
-    private var microphonePermissionRow: some View {
-        let isGranted = companionManager.hasMicrophonePermission
-        return HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "mic")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
-                    .frame(width: 16)
-
-                Text("Microphone")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(DS.Colors.success)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.success)
-                }
-            } else {
-                Button(action: {
-                    // Triggers the native macOS microphone permission dialog on
-                    // first attempt. If already denied, opens System Settings.
-                    let status = AVCaptureDevice.authorizationStatus(for: .audio)
-                    if status == .notDetermined {
-                        AVCaptureDevice.requestAccess(for: .audio) { _ in }
-                    } else {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                }) {
-                    Text("Grant")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(DS.Colors.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
-    private func permissionRow(
-        label: String,
-        iconName: String,
-        isGranted: Bool,
-        settingsURL: String
-    ) -> some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: iconName)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
-                    .frame(width: 16)
-
-                Text(label)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(DS.Colors.success)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.success)
-                }
-            } else {
-                Button(action: {
-                    if let url = URL(string: settingsURL) {
-                        NSWorkspace.shared.open(url)
-                    }
-                }) {
-                    Text("Grant")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(DS.Colors.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
-
-
-    // MARK: - Show Clicky Cursor Toggle
-
-    private var showClickyCursorToggleRow: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "cursorarrow")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(width: 16)
-
-                Text("Show Clicky")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-            }
-
-            Spacer()
-
-            Toggle("", isOn: Binding(
-                get: { companionManager.isClickyCursorEnabled },
-                set: { companionManager.setClickyCursorEnabled($0) }
-            ))
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .tint(DS.Colors.accent)
-            .scaleEffect(0.8)
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var speechToTextProviderRow: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "mic.badge.waveform")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(width: 16)
-
-                Text("Speech to Text")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-            }
-
-            Spacer()
-
-            Text(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(DS.Colors.textTertiary)
-        }
-        .padding(.vertical, 4)
-    }
-
-    // MARK: - Model Picker
-
-    private var modelPickerRow: some View {
-        HStack {
-            Text("Model")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-
-            Spacer()
-
-            HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
-        return Button(action: {
-            companionManager.setSelectedModel(modelID)
-        }) {
-            Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+        VStack(spacing: 0) {
+            settingsRow(title: "Model", caption: modelCaption) {
+                CompactChoiceControl(
+                    choices: [
+                        (label: "Haiku", value: "claude-haiku-4-5"),
+                        (label: "Sonnet", value: "claude-sonnet-4-6"),
+                        (label: "Opus", value: "claude-opus-4-6"),
+                    ],
+                    selectedValue: selectedModelChoice,
+                    onSelect: { companionManager.setSelectedModel($0) }
                 )
+            }
+
+            settingsRow(title: "Think before answering", caption: "More careful, but slower to start talking") {
+                settingsToggle(
+                    isOn: companionManager.isExtendedThinkingEnabled,
+                    onChange: { companionManager.setExtendedThinkingEnabled($0) }
+                )
+            }
+
+            settingsRow(title: "Open at login", caption: nil) {
+                settingsToggle(
+                    isOn: companionManager.isOpenAtLoginEnabled,
+                    onChange: { companionManager.setOpenAtLoginEnabled($0) }
+                )
+            }
         }
-        .buttonStyle(.plain)
-        .pointerCursor()
     }
 
-    // MARK: - DM Farza Button
+    /// The stored model id, matched to the family shown in the picker.
+    private var selectedModelChoice: String {
+        switch ClaudeCodeCLI.modelAlias(forRequestedModel: companionManager.selectedModel) {
+        case "haiku": return "claude-haiku-4-5"
+        case "opus": return "claude-opus-4-6"
+        default: return "claude-sonnet-4-6"
+        }
+    }
 
-    private var dmFarzaButton: some View {
-        Button(action: {
-            if let url = URL(string: "https://x.com/farzatv") {
-                NSWorkspace.shared.open(url)
-            }
-        }) {
-            HStack(spacing: 8) {
-                Image(systemName: "bubble.left.fill")
-                    .font(.system(size: 12, weight: .medium))
+    private var modelCaption: String {
+        switch ClaudeCodeCLI.modelAlias(forRequestedModel: companionManager.selectedModel) {
+        case "haiku": return "Fastest answers"
+        case "opus": return "Most capable, slowest"
+        default: return "Fast and sharp"
+        }
+    }
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Got feedback? DM me")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("Bugs, ideas, anything — I read every message.")
-                        .font(.system(size: 10))
+    private func settingsRow<Control: View>(title: String, caption: String?, @ViewBuilder control: () -> Control) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                if let caption {
+                    Text(caption)
+                        .font(.system(size: 11))
                         .foregroundColor(DS.Colors.textTertiary)
                 }
             }
-            .foregroundColor(DS.Colors.textSecondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
+            Spacer(minLength: 8)
+            control()
         }
-        .buttonStyle(.plain)
-        .pointerCursor()
+        .padding(.vertical, 7)
+    }
+
+    private func settingsToggle(isOn: Bool, onChange: @escaping (Bool) -> Void) -> some View {
+        Toggle("", isOn: Binding(get: { isOn }, set: onChange))
+            .toggleStyle(CompanionSwitchToggleStyle())
+            .labelsHidden()
     }
 
     // MARK: - Footer
 
     private var footerSection: some View {
-        HStack {
-            Button(action: {
-                NSApp.terminate(nil)
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "power")
-                        .font(.system(size: 11, weight: .medium))
-                    Text("Quit Clicky")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundColor(DS.Colors.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
+        HStack(spacing: 4) {
+            Button("Setup") { openSetup() }
+                .buttonStyle(PanelFooterButtonStyle())
+            Spacer()
+            Button("Quit \(AppIdentity.displayName)") { NSApp.terminate(nil) }
+                .buttonStyle(PanelFooterButtonStyle())
+        }
+    }
 
-            if companionManager.hasCompletedOnboarding {
-                Spacer()
+    private struct PanelFooterButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            FooterButtonBody(configuration: configuration)
+        }
 
-                Button(action: {
-                    companionManager.replayOnboarding()
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "play.circle")
-                            .font(.system(size: 11, weight: .medium))
-                        Text("Watch Onboarding Again")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .foregroundColor(DS.Colors.textTertiary)
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
+        private struct FooterButtonBody: View {
+            let configuration: ButtonStyleConfiguration
+            @State private var isHovered = false
+
+            var body: some View {
+                configuration.label
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(isHovered ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.white.opacity(isHovered ? 0.06 : 0))
+                    )
+                    .onHover { isHovering in isHovered = isHovering }
+                    .pointerCursor()
             }
         }
     }
@@ -721,41 +370,11 @@ struct CompanionPanelView: View {
     private var panelBackground: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(DS.Colors.background)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+            )
             .shadow(color: Color.black.opacity(0.5), radius: 20, x: 0, y: 10)
             .shadow(color: Color.black.opacity(0.3), radius: 4, x: 0, y: 2)
     }
-
-    private var statusDotColor: Color {
-        if !companionManager.isOverlayVisible {
-            return DS.Colors.textTertiary
-        }
-        switch companionManager.voiceState {
-        case .idle:
-            return DS.Colors.success
-        case .listening:
-            return DS.Colors.blue400
-        case .processing, .responding:
-            return DS.Colors.blue400
-        }
-    }
-
-    private var statusText: String {
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
-            return "Setup"
-        }
-        if !companionManager.isOverlayVisible {
-            return "Ready"
-        }
-        switch companionManager.voiceState {
-        case .idle:
-            return "Active"
-        case .listening:
-            return "Listening"
-        case .processing:
-            return "Processing"
-        case .responding:
-            return "Responding"
-        }
-    }
-
 }

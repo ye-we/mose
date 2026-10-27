@@ -289,3 +289,6 @@ class ClaudeAPI {
         return (text: text, duration: duration)
     }
 }
+
+/// An HTTP bridge (local-bridge/server.mjs, or a Cloudflare Worker with API keys) as the chat backend.
+extension ClaudeAPI: CompanionChatBackend {}

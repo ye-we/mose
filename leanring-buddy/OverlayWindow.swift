@@ -94,6 +94,14 @@ enum BuddyNavigationMode {
     case navigatingToTarget
     /// Buddy has arrived at the target and is pointing at it with a speech bubble
     case pointingAtTarget
+    /// Buddy is the pen: its tip traces a hand-drawn mark on the screen
+    case drawingSketch
+}
+
+/// One thing for the buddy to do: fly to a point, or draw a mark.
+private enum OverlayVisualBeat {
+    case point(screenLocation: CGPoint, bubbleText: String?)
+    case sketch(CompanionManager.ResolvedSketchBeat)
 }
 
 // SwiftUI view for the blue glowing cursor pointer.
@@ -165,12 +173,39 @@ struct BlueCursorView: View {
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
 
-    // MARK: - Onboarding Video Layout
+    // MARK: - Visual Beat Queue
 
-    private let onboardingVideoPlayerWidth: CGFloat = 330
-    private let onboardingVideoPlayerHeight: CGFloat = 186
+    /// Points and marks waiting their turn. The buddy does one at a time, so a
+    /// beat that arrives mid-flight or mid-drawing never cuts the current one short.
+    @State private var pendingVisualBeats: [OverlayVisualBeat] = []
+    @State private var isPerformingVisualBeat: Bool = false
+    /// Incremented for every beat performed (and on cancel). Delayed callbacks
+    /// (bubble streaming, hold timers, the pen) check it so leftovers from an
+    /// earlier beat can't fade or fly away from a newer one.
+    @State private var visualBeatGeneration: Int = 0
 
-    private let fullWelcomeMessage = "hey! i'm clicky"
+    // MARK: - Screen Sketching State
+
+    /// Marks drawn on this screen, with how far the pen has drawn each one.
+    @State private var activeSketchDrawings: [ActiveScreenSketchDrawing] = []
+    /// Faded to 0 to wipe the drawings, then reset once they're removed.
+    @State private var sketchLayerOpacity: Double = 1.0
+    /// Moves the pen along a mark at 60fps while it draws.
+    @State private var penDrawingTimer: Timer?
+
+    /// True between the mouse going down and up while the user is drawing.
+    @State private var isDrawingUserInkStroke = false
+
+    /// Where the triangle's tip sits relative to its center at the resting
+    /// -35° angle, so the tip (not the middle of the triangle) traces strokes.
+    private let penTipOffsetFromTriangleCenter = CGPoint(x: -4.6, y: -6.6)
+
+    /// Bubble text captured when the flight toward the current target started,
+    /// so the next step of a walkthrough can't swap its label in mid-flight.
+    @State private var bubbleTextForCurrentTarget: String?
+
+
+    private let fullWelcomeMessage = "hey! i'm \(AppIdentity.displayName.lowercased())"
 
     private let navigationPointerPhrases = [
         "right here!",
@@ -185,6 +220,30 @@ struct BlueCursorView: View {
         ZStack {
             // Nearly transparent background (helps with compositing)
             Color.black.opacity(0.001)
+
+            // Clicky's hand-drawn marks sit under the cursor and its bubbles
+            ScreenSketchLayer(activeSketchDrawings: activeSketchDrawings)
+                .opacity(sketchLayerOpacity)
+
+            // What the user draws while holding the talk hotkey, in red
+            Canvas { graphicsContext, _ in
+                for userInkStroke in companionManager.userInkStrokes where userInkStroke.count > 1 {
+                    var userInkPath = Path()
+                    userInkPath.addLines(userInkStroke.map { convertScreenPointToSwiftUICoordinates($0) })
+                    graphicsContext.stroke(
+                        userInkPath,
+                        with: .color(Color(
+                            .sRGB,
+                            red: UserInkCompositor.userInkRedGreenBlue.red,
+                            green: UserInkCompositor.userInkRedGreenBlue.green,
+                            blue: UserInkCompositor.userInkRedGreenBlue.blue,
+                            opacity: 0.9
+                        )),
+                        style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round)
+                    )
+                }
+            }
+            .allowsHitTesting(false)
 
             // Welcome speech bubble (first launch only)
             if isCursorOnThisScreen && showWelcome && !welcomeText.isEmpty {
@@ -209,50 +268,6 @@ struct BlueCursorView: View {
                     .position(x: cursorPosition.x + 10 + (bubbleSize.width / 2), y: cursorPosition.y + 18)
                     .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                     .animation(.easeOut(duration: 0.5), value: bubbleOpacity)
-                    .onPreferenceChange(SizePreferenceKey.self) { newSize in
-                        bubbleSize = newSize
-                    }
-            }
-
-            // Onboarding video — always in the view tree so opacity animation works
-            // reliably. When no player exists or opacity is 0, nothing is visible.
-            // allowsHitTesting(false) prevents it from intercepting clicks.
-            OnboardingVideoPlayerView(player: companionManager.onboardingVideoPlayer)
-                .frame(width: onboardingVideoPlayerWidth, height: onboardingVideoPlayerHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .shadow(color: Color.black.opacity(0.4 * companionManager.onboardingVideoOpacity), radius: 12, x: 0, y: 6)
-                .opacity(isCursorOnThisScreen ? companionManager.onboardingVideoOpacity : 0)
-                .position(
-                    x: cursorPosition.x + 10 + (onboardingVideoPlayerWidth / 2),
-                    y: cursorPosition.y + 18 + (onboardingVideoPlayerHeight / 2)
-                )
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeInOut(duration: 2.0), value: companionManager.onboardingVideoOpacity)
-                .allowsHitTesting(false)
-
-            // Onboarding prompt — "press control + option and say hi" streamed after video ends
-            if isCursorOnThisScreen && companionManager.showOnboardingPrompt && !companionManager.onboardingPromptText.isEmpty {
-                Text(companionManager.onboardingPromptText)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
-                            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.5), radius: 6, x: 0, y: 0)
-                    )
-                    .fixedSize()
-                    .overlay(
-                        GeometryReader { geo in
-                            Color.clear
-                                .preference(key: SizePreferenceKey.self, value: geo.size)
-                        }
-                    )
-                    .opacity(companionManager.onboardingPromptOpacity)
-                    .position(x: cursorPosition.x + 10 + (bubbleSize.width / 2), y: cursorPosition.y + 18)
-                    .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                    .animation(.easeOut(duration: 0.4), value: companionManager.onboardingPromptOpacity)
                     .onPreferenceChange(SizePreferenceKey.self) { newSize in
                         bubbleSize = newSize
                     }
@@ -339,6 +354,22 @@ struct BlueCursorView: View {
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
         .ignoresSafeArea()
+        // Only active while the talk hotkey is held (the window ignores the
+        // mouse otherwise): dragging draws the user's own ink
+        .gesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .onChanged { dragValue in
+                    if !isDrawingUserInkStroke {
+                        isDrawingUserInkStroke = true
+                        companionManager.beginUserInkStroke(atGlobalLocation: convertSwiftUIPointToScreenCoordinates(dragValue.startLocation))
+                    }
+                    companionManager.continueUserInkStroke(toGlobalLocation: convertSwiftUIPointToScreenCoordinates(dragValue.location))
+                }
+                .onEnded { _ in
+                    isDrawingUserInkStroke = false
+                },
+            including: companionManager.isAcceptingUserInk ? .all : .none
+        )
         .onAppear {
             // Set initial cursor position immediately before starting animation
             let mouseLocation = NSEvent.mouseLocation
@@ -366,23 +397,60 @@ struct BlueCursorView: View {
         .onDisappear {
             timer?.invalidate()
             navigationAnimationTimer?.invalidate()
-            companionManager.tearDownOnboardingVideo()
+            penDrawingTimer?.invalidate()
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
             // When a UI element location is detected, navigate the buddy to
             // that position so it points at the element.
             guard let screenLocation = newLocation,
                   let displayFrame = companionManager.detectedElementDisplayFrame else {
+                // The target was cleared from outside (the user talked again or a
+                // walkthrough was cancelled) while the buddy was still out
+                // pointing, so bring it home.
+                if newLocation == nil && buddyNavigationMode != .followingCursor && !isReturningToCursor {
+                    stopVisualBeatsAndFlyHome()
+                }
                 return
             }
 
-            // Only navigate if the target is on THIS screen
-            guard screenFrame.contains(CGPoint(x: displayFrame.midX, y: displayFrame.midY))
-                  || displayFrame == screenFrame else {
+            guard isOnThisScreen(displayFrame: displayFrame) else {
+                // The next beat of a walkthrough is on another monitor. Stand this
+                // screen's buddy down without clearing the target the other
+                // screen's buddy is about to fly to.
+                if buddyNavigationMode != .followingCursor {
+                    handOffVisualBeatsToAnotherScreen()
+                }
                 return
             }
 
-            startNavigatingToElement(screenLocation: screenLocation)
+            enqueueVisualBeat(.point(
+                screenLocation: screenLocation,
+                bubbleText: companionManager.detectedElementBubbleText
+            ))
+        }
+        .onChange(of: companionManager.latestSketchBeat?.id) { _ in
+            guard let sketchBeat = companionManager.latestSketchBeat else { return }
+
+            guard isOnThisScreen(displayFrame: sketchBeat.displayFrame) else {
+                if buddyNavigationMode != .followingCursor {
+                    handOffVisualBeatsToAnotherScreen()
+                }
+                return
+            }
+
+            enqueueVisualBeat(.sketch(sketchBeat))
+        }
+        .onChange(of: companionManager.sketchClearGeneration) { _ in
+            wipeSketchDrawings()
+        }
+        .onChange(of: companionManager.isVisualSequenceAwaitingNextBeat) { isAwaitingNextBeat in
+            // The answer finished while the buddy was parked on its last beat
+            // waiting for more: linger a moment, then fly home
+            guard !isAwaitingNextBeat,
+                  !isPerformingVisualBeat,
+                  pendingVisualBeats.isEmpty,
+                  buddyNavigationMode == .pointingAtTarget || buddyNavigationMode == .drawingSketch else { return }
+            finishCurrentVisualBeat(lingerSecondsBeforeReturning: 1.5)
         }
     }
 
@@ -401,7 +469,7 @@ struct BlueCursorView: View {
                 return false
             }
             return isCursorOnThisScreen
-        case .navigatingToTarget, .pointingAtTarget:
+        case .navigatingToTarget, .pointingAtTarget, .drawingSketch:
             return true
         }
     }
@@ -444,6 +512,14 @@ struct BlueCursorView: View {
 
     /// Converts a macOS screen point (AppKit, bottom-left origin) to SwiftUI
     /// coordinates (top-left origin) relative to this screen's overlay window.
+    /// The inverse of convertScreenPointToSwiftUICoordinates.
+    private func convertSwiftUIPointToScreenCoordinates(_ swiftUIPoint: CGPoint) -> CGPoint {
+        CGPoint(
+            x: swiftUIPoint.x + screenFrame.origin.x,
+            y: screenFrame.origin.y + screenFrame.height - swiftUIPoint.y
+        )
+    }
+
     private func convertScreenPointToSwiftUICoordinates(_ screenPoint: CGPoint) -> CGPoint {
         let x = screenPoint.x - screenFrame.origin.x
         let y = (screenFrame.origin.y + screenFrame.height) - screenPoint.y
@@ -453,9 +529,8 @@ struct BlueCursorView: View {
     // MARK: - Element Navigation
 
     /// Starts animating the buddy toward a detected UI element location.
-    private func startNavigatingToElement(screenLocation: CGPoint) {
-        // Don't interrupt welcome animation
-        guard !showWelcome || welcomeText.isEmpty else { return }
+    private func startNavigatingToElement(screenLocation: CGPoint, bubbleText: String?) {
+        bubbleTextForCurrentTarget = bubbleText
 
         // Convert the AppKit screen location to SwiftUI coordinates for this screen
         let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
@@ -571,6 +646,7 @@ struct BlueCursorView: View {
     /// scale-in entrance and variable-speed character streaming.
     private func startPointingAtElement() {
         buddyNavigationMode = .pointingAtTarget
+        let currentVisualBeatGeneration = visualBeatGeneration
 
         // Rotate back to default pointer angle now that we've arrived
         triangleRotationDegrees = -35.0
@@ -581,21 +657,24 @@ struct BlueCursorView: View {
         navigationBubbleSize = .zero
         navigationBubbleScale = 0.5
 
-        // Use custom bubble text from the companion manager (e.g. onboarding demo)
-        // if available, otherwise fall back to a random pointer phrase
-        let pointerPhrase = companionManager.detectedElementBubbleText
+        // Use custom bubble text from the companion manager (e.g. onboarding demo
+        // or a numbered walkthrough step) if available, otherwise fall back to a
+        // random pointer phrase
+        let pointerPhrase = bubbleTextForCurrentTarget
             ?? navigationPointerPhrases.randomElement()
             ?? "right here!"
 
-        streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
-            // All characters streamed — hold for 3 seconds, then fly back
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                self.navigationBubbleOpacity = 0.0
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                    self.startFlyingBackToCursor()
-                }
+        streamNavigationBubbleCharacter(
+            phrase: pointerPhrase,
+            characterIndex: 0,
+            visualBeatGeneration: currentVisualBeatGeneration
+        ) {
+            // All characters streamed — give the bubble a moment to be read,
+            // then move on (3 seconds in total before flying home, as before)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                guard self.buddyNavigationMode == .pointingAtTarget,
+                      self.visualBeatGeneration == currentVisualBeatGeneration else { return }
+                self.finishCurrentVisualBeat(lingerSecondsBeforeReturning: 2.0)
             }
         }
     }
@@ -605,9 +684,11 @@ struct BlueCursorView: View {
     private func streamNavigationBubbleCharacter(
         phrase: String,
         characterIndex: Int,
+        visualBeatGeneration streamingVisualBeatGeneration: Int,
         onComplete: @escaping () -> Void
     ) {
-        guard buddyNavigationMode == .pointingAtTarget else { return }
+        guard buddyNavigationMode == .pointingAtTarget,
+              visualBeatGeneration == streamingVisualBeatGeneration else { return }
         guard characterIndex < phrase.count else {
             onComplete()
             return
@@ -626,6 +707,7 @@ struct BlueCursorView: View {
             self.streamNavigationBubbleCharacter(
                 phrase: phrase,
                 characterIndex: characterIndex + 1,
+                visualBeatGeneration: streamingVisualBeatGeneration,
                 onComplete: onComplete
             )
         }
@@ -660,8 +742,16 @@ struct BlueCursorView: View {
 
     /// Returns the buddy to normal cursor-following mode after navigation completes.
     private func finishNavigationAndResumeFollowing() {
+        resetNavigationStateWithoutClearingTarget()
+        companionManager.clearDetectedElementLocation()
+    }
+
+    /// Puts this screen's buddy back into cursor-following mode but leaves the
+    /// shared target alone, for when another screen's buddy is taking over.
+    private func resetNavigationStateWithoutClearingTarget() {
         navigationAnimationTimer?.invalidate()
         navigationAnimationTimer = nil
+        stopPenDrawing()
         buddyNavigationMode = .followingCursor
         isReturningToCursor = false
         triangleRotationDegrees = -35.0
@@ -669,7 +759,210 @@ struct BlueCursorView: View {
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
-        companionManager.clearDetectedElementLocation()
+    }
+
+    // MARK: - Visual Beats
+
+    private func isOnThisScreen(displayFrame: CGRect) -> Bool {
+        screenFrame.contains(CGPoint(x: displayFrame.midX, y: displayFrame.midY)) || displayFrame == screenFrame
+    }
+
+    private func enqueueVisualBeat(_ visualBeat: OverlayVisualBeat) {
+        pendingVisualBeats.append(visualBeat)
+        if !isPerformingVisualBeat {
+            performNextVisualBeat()
+        }
+    }
+
+    /// Starts the next queued point or mark, flying straight from wherever the
+    /// buddy is: the cursor, or the previous beat of a walkthrough.
+    private func performNextVisualBeat() {
+        guard !pendingVisualBeats.isEmpty else {
+            isPerformingVisualBeat = false
+            return
+        }
+
+        // Don't interrupt the welcome animation
+        guard !showWelcome || welcomeText.isEmpty else {
+            pendingVisualBeats.removeAll()
+            isPerformingVisualBeat = false
+            return
+        }
+
+        let nextVisualBeat = pendingVisualBeats.removeFirst()
+        isPerformingVisualBeat = true
+        visualBeatGeneration += 1
+        stopPenDrawing()
+
+        switch nextVisualBeat {
+        case .point(let screenLocation, let bubbleText):
+            startNavigatingToElement(screenLocation: screenLocation, bubbleText: bubbleText)
+        case .sketch(let sketchBeat):
+            startDrawingSketch(sketchBeat)
+        }
+    }
+
+    /// Called once a point's bubble has been read or a mark is fully drawn.
+    /// Goes straight to the next beat if one is waiting, stays parked if the
+    /// walkthrough has more coming, and otherwise lingers, then flies home.
+    private func finishCurrentVisualBeat(lingerSecondsBeforeReturning: Double) {
+        if !pendingVisualBeats.isEmpty {
+            performNextVisualBeat()
+            return
+        }
+
+        isPerformingVisualBeat = false
+
+        // Mid-walkthrough: stay parked here until the next beat arrives
+        guard !companionManager.isVisualSequenceAwaitingNextBeat else { return }
+
+        let finishedVisualBeatGeneration = visualBeatGeneration
+        func isStillParkedOnFinishedBeat() -> Bool {
+            visualBeatGeneration == finishedVisualBeatGeneration
+                && !isPerformingVisualBeat
+                && (buddyNavigationMode == .pointingAtTarget || buddyNavigationMode == .drawingSketch)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + lingerSecondsBeforeReturning) {
+            guard isStillParkedOnFinishedBeat() else { return }
+            self.navigationBubbleOpacity = 0.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                guard isStillParkedOnFinishedBeat() else { return }
+                self.startFlyingBackToCursor()
+            }
+        }
+    }
+
+    /// Drops any queued beats and sends the buddy back to the cursor.
+    private func stopVisualBeatsAndFlyHome() {
+        pendingVisualBeats.removeAll()
+        stopPenDrawing()
+        visualBeatGeneration += 1
+        isPerformingVisualBeat = false
+        if buddyNavigationMode != .followingCursor && !isReturningToCursor {
+            startFlyingBackToCursor()
+        }
+    }
+
+    /// Another screen's buddy is taking over the walkthrough: finish any
+    /// half-drawn mark here instantly and go back to following the cursor.
+    private func handOffVisualBeatsToAnotherScreen() {
+        pendingVisualBeats.removeAll()
+        visualBeatGeneration += 1
+        isPerformingVisualBeat = false
+        for drawingIndex in activeSketchDrawings.indices {
+            activeSketchDrawings[drawingIndex].drawingProgress = 1
+        }
+        resetNavigationStateWithoutClearingTarget()
+    }
+
+    // MARK: - Screen Sketching
+
+    /// Lays out the mark for this screen, flies the buddy to where the pen
+    /// starts, then traces it.
+    private func startDrawingSketch(_ sketchBeat: CompanionManager.ResolvedSketchBeat) {
+        let localPoints = sketchBeat.globalScreenPoints.map { convertScreenPointToSwiftUICoordinates($0) }
+
+        // Seed the wobble from the beat's id so the mark is decided once
+        let uuidBytes = sketchBeat.id.uuid
+        let wobbleSeed = [uuidBytes.0, uuidBytes.1, uuidBytes.2, uuidBytes.3, uuidBytes.4, uuidBytes.5, uuidBytes.6, uuidBytes.7]
+            .reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+
+        let localLabelObstacleRects = sketchBeat.labelObstacleGlobalRects.map { globalRect -> CGRect in
+            let firstCorner = convertScreenPointToSwiftUICoordinates(CGPoint(x: globalRect.minX, y: globalRect.minY))
+            let secondCorner = convertScreenPointToSwiftUICoordinates(CGPoint(x: globalRect.maxX, y: globalRect.maxY))
+            return CGRect(
+                x: min(firstCorner.x, secondCorner.x),
+                y: min(firstCorner.y, secondCorner.y),
+                width: abs(secondCorner.x - firstCorner.x),
+                height: abs(secondCorner.y - firstCorner.y)
+            )
+        }
+
+        let sketchDrawing = ScreenSketchGeometry.makeDrawing(
+            kind: sketchBeat.kind,
+            localPoints: localPoints,
+            label: sketchBeat.label,
+            inkColor: sketchBeat.inkColor,
+            canvasSize: screenFrame.size,
+            seed: wobbleSeed,
+            isOverDarkBackground: sketchBeat.isOverDarkBackground,
+            labelObstacleRects: localLabelObstacleRects,
+            id: sketchBeat.id
+        )
+        sketchLayerOpacity = 1.0
+        activeSketchDrawings.append(ActiveScreenSketchDrawing(drawing: sketchDrawing, drawingProgress: 0))
+
+        // Navigating hides any pointer bubble left from a previous beat
+        buddyNavigationMode = .navigatingToTarget
+        isReturningToCursor = false
+        let currentVisualBeatGeneration = visualBeatGeneration
+
+        animateBezierFlightArc(to: triangleCenter(forPenTip: sketchDrawing.penStartPoint)) {
+            guard self.visualBeatGeneration == currentVisualBeatGeneration else { return }
+            self.runPenAlongDrawing(withID: sketchDrawing.id)
+        }
+    }
+
+    /// Moves the pen tip along the drawing at 60fps, inking it as it goes.
+    private func runPenAlongDrawing(withID drawingID: UUID) {
+        guard let drawingIndex = activeSketchDrawings.firstIndex(where: { $0.id == drawingID }) else {
+            finishCurrentVisualBeat(lingerSecondsBeforeReturning: 1.0)
+            return
+        }
+        let sketchDrawing = activeSketchDrawings[drawingIndex].drawing
+
+        buddyNavigationMode = .drawingSketch
+        triangleRotationDegrees = -35.0
+        buddyFlightScale = 1.0
+
+        let drawingStartDate = Date()
+        let currentVisualBeatGeneration = visualBeatGeneration
+        penDrawingTimer?.invalidate()
+        penDrawingTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
+            guard self.visualBeatGeneration == currentVisualBeatGeneration,
+                  let currentDrawingIndex = self.activeSketchDrawings.firstIndex(where: { $0.id == drawingID }) else {
+                self.stopPenDrawing()
+                return
+            }
+
+            let drawingProgress = min(Date().timeIntervalSince(drawingStartDate) / sketchDrawing.drawingDurationSeconds, 1)
+            self.activeSketchDrawings[currentDrawingIndex].drawingProgress = drawingProgress
+            self.cursorPosition = self.triangleCenter(forPenTip: sketchDrawing.penPoint(atProgress: drawingProgress))
+
+            if drawingProgress >= 1 {
+                self.stopPenDrawing()
+                self.finishCurrentVisualBeat(lingerSecondsBeforeReturning: 1.0)
+            }
+        }
+    }
+
+    private func stopPenDrawing() {
+        penDrawingTimer?.invalidate()
+        penDrawingTimer = nil
+    }
+
+    private func triangleCenter(forPenTip penTipPoint: CGPoint) -> CGPoint {
+        CGPoint(
+            x: penTipPoint.x - penTipOffsetFromTriangleCenter.x,
+            y: penTipPoint.y - penTipOffsetFromTriangleCenter.y
+        )
+    }
+
+    /// Fades every drawing out, and sends the buddy home if it was still
+    /// out on a walkthrough.
+    private func wipeSketchDrawings() {
+        stopVisualBeatsAndFlyHome()
+
+        guard !activeSketchDrawings.isEmpty else { return }
+        let wipedDrawingIDs = Set(activeSketchDrawings.map(\.id))
+        withAnimation(.easeOut(duration: 0.3)) {
+            sketchLayerOpacity = 0
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            self.activeSketchDrawings.removeAll { wipedDrawingIDs.contains($0.id) }
+            self.sketchLayerOpacity = 1.0
+        }
     }
 
     // MARK: - Welcome Animation
@@ -689,8 +982,6 @@ struct BlueCursorView: View {
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                     self.showWelcome = false
-                    // Start the onboarding video right after the welcome text disappears
-                    self.companionManager.setupOnboardingVideo()
                 }
                 return
             }
@@ -807,6 +1098,14 @@ class OverlayWindowManager {
         }
     }
 
+    /// While the user holds the talk hotkey the overlay catches the mouse, so
+    /// dragging draws on the screen instead of clicking the app underneath.
+    func setAcceptsMouseInput(_ shouldAcceptMouseInput: Bool) {
+        for window in overlayWindows {
+            window.ignoresMouseEvents = !shouldAcceptMouseInput
+        }
+    }
+
     func hideOverlay() {
         for window in overlayWindows {
             window.orderOut(nil)
@@ -836,46 +1135,5 @@ class OverlayWindowManager {
 
     func isShowingOverlay() -> Bool {
         return !overlayWindows.isEmpty
-    }
-}
-
-// MARK: - Onboarding Video Player
-
-/// NSViewRepresentable wrapping an AVPlayerLayer so HLS video plays
-/// inside SwiftUI. Uses a custom NSView subclass to keep the player
-/// layer sized to the view's bounds automatically.
-private struct OnboardingVideoPlayerView: NSViewRepresentable {
-    let player: AVPlayer?
-
-    func makeNSView(context: Context) -> AVPlayerNSView {
-        let view = AVPlayerNSView()
-        view.player = player
-        return view
-    }
-
-    func updateNSView(_ nsView: AVPlayerNSView, context: Context) {
-        nsView.player = player
-    }
-}
-
-private class AVPlayerNSView: NSView {
-    var player: AVPlayer? {
-        didSet { playerLayer.player = player }
-    }
-
-    private let playerLayer = AVPlayerLayer()
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        playerLayer.videoGravity = .resizeAspectFill
-        layer?.addSublayer(playerLayer)
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func layout() {
-        super.layout()
-        playerLayer.frame = bounds
     }
 }

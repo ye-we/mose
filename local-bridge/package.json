@@ -1,0 +1,13 @@
+{
+  "name": "clicky-local-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local replacement for the Clicky Cloudflare Worker that routes chat through your Claude Code login",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

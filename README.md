@@ -37,6 +37,27 @@ Help me set up everything — the Cloudflare Worker with my own API keys, the pr
 
 That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
 
+## Run it on your Claude Code login (no API keys, no server)
+
+This fork answers with the Claude Code CLI on your Mac, so it uses whatever Claude plan you're signed into Claude Code with. There's nothing else to start: the app runs `claude` itself for answers and background tasks, listens with Apple Speech and speaks with your Mac's system voice (`say`, often a Siri voice).
+
+1. Install and sign in to [Claude Code](https://claude.com/claude-code) (`claude auth status` should say you're logged in). The app's setup window can do both for you.
+2. Open `leanring-buddy.xcodeproj` and hit **Cmd + R**.
+3. On first launch a setup window walks you through connecting Claude Code, the four permissions, and saying hi once. Open it again any time from the menu bar panel.
+
+The menu bar panel has the settings: model (Haiku, Sonnet or Opus), "Think before answering" (off by default; it can add many seconds before Clicky starts talking) and open at login.
+
+What this fork adds on top of the original Clicky:
+
+- **Drawing on your screen**: Clicky circles, boxes, underlines, highlights, crosses out and writes short notes right on top of your apps, with its cursor as the pen, in time with what it's saying.
+- **Guided steps**: ask how to do something and Clicky marks the one thing to click next. Click it and Clicky looks again and shows the next step, until you're done.
+- **Faster voice**: Clicky starts talking as soon as the first sentence of the answer is ready.
+- **Background tasks**: ask it to go research something or make a file ("make me a one page PDF comparing…") and a separate Claude Code session does it in the background; it's listed in the menu bar panel and Clicky tells you when it's done. Its shell commands are sandboxed to its own folder.
+- **Dictation anywhere**: hold **fn+Control**, talk, let go, and the text is typed wherever your cursor is.
+- **Circle it yourself**: while holding Control+Option, drag the mouse to draw on the screen; Clicky sees what you marked.
+
+`local-bridge/server.mjs` is still here for testing (run it on another port and launch the app with `CLICKY_BRIDGE_URL=http://127.0.0.1:8790`) and for ElevenLabs voices. The original Cloudflare Worker setup below still works the same way, through `CLICKY_BRIDGE_URL`.
+
 ## Manual setup
 
 If you want to do it yourself, here's the deal.

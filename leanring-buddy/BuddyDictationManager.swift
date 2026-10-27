@@ -93,6 +93,31 @@ enum BuddyPushToTalkShortcut {
     }
 
     static let currentShortcutOption: ShortcutOption = .controlOption
+
+    /// Hold fn + control to dictate into whatever text field has focus.
+    /// Option and command must be up, so it never overlaps ctrl + option.
+    static let dictationShortcutDisplayText = "fn + control"
+
+    static func dictationShortcutTransition(
+        for eventType: CGEventType,
+        modifierFlagsRawValue: UInt64,
+        wasShortcutPreviouslyPressed: Bool
+    ) -> ShortcutTransition {
+        guard eventType == .flagsChanged else { return .none }
+        let modifierFlags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
+            .intersection(.deviceIndependentFlagsMask)
+        let isShortcutCurrentlyPressed = modifierFlags.contains([.control, .function])
+            && !modifierFlags.contains(.option)
+            && !modifierFlags.contains(.command)
+
+        if isShortcutCurrentlyPressed && !wasShortcutPreviouslyPressed {
+            return .pressed
+        }
+        if !isShortcutCurrentlyPressed && wasShortcutPreviouslyPressed {
+            return .released
+        }
+        return .none
+    }
     static let pushToTalkKeyCode: UInt16 = 49 // Space
     static let pushToTalkDisplayText = currentShortcutOption.displayText
     static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"

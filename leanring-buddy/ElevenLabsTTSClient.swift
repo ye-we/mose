@@ -31,6 +31,19 @@ final class ElevenLabsTTSClient {
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
     func speakText(_ text: String) async throws {
+        let data = try await fetchSpeechAudio(for: text)
+
+        try Task.checkCancellation()
+
+        let player = try AVAudioPlayer(data: data)
+        self.audioPlayer = player
+        player.play()
+        print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+    }
+
+    /// The spoken audio for `text` (MP3 from ElevenLabs, or WAV from the local
+    /// bridge's macOS voice), without playing it.
+    func fetchSpeechAudio(for text: String) async throws -> Data {
         var request = URLRequest(url: proxyURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -60,17 +73,18 @@ final class ElevenLabsTTSClient {
                           userInfo: [NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)"])
         }
 
-        try Task.checkCancellation()
-
-        let player = try AVAudioPlayer(data: data)
-        self.audioPlayer = player
-        player.play()
-        print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+        return data
     }
 
     /// Whether TTS audio is currently playing back.
     var isPlaying: Bool {
         audioPlayer?.isPlaying ?? false
+    }
+
+    /// Length of the loaded TTS audio, used to time multi-step pointing to the
+    /// speech. Zero when nothing is loaded.
+    var currentPlaybackDurationSeconds: TimeInterval {
+        audioPlayer?.duration ?? 0
     }
 
     /// Stops any in-progress playback immediately.

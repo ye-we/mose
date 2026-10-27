@@ -31,6 +31,8 @@ struct leanring_buddyApp: App {
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
+    private var setupWindowController: SetupWindowController?
+    private var openSetupObserver: NSObjectProtocol?
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -39,37 +41,42 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
-        ClickyAnalytics.configure()
+        // PostHog is off for local builds: the upstream key would send your
+        // voice transcripts and Claude's replies to the original author's project.
+        // With setup skipped, every ClickyAnalytics.track* call is a no-op.
+        // ClickyAnalytics.configure()
         ClickyAnalytics.trackAppOpened()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
-        companionManager.start()
-        // Auto-open the panel if the user still needs to do something:
-        // either they haven't onboarded yet, or permissions were revoked.
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
-            menuBarPanelManager?.showPanelOnLaunch()
+        let setupWindowController = SetupWindowController(companionManager: companionManager)
+        self.setupWindowController = setupWindowController
+        openSetupObserver = NotificationCenter.default.addObserver(
+            forName: .clickyOpenSetup,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.setupWindowController?.showSetup() }
         }
-        registerAsLoginItemIfNeeded()
+
+        companionManager.start()
+        companionManager.applyOpenAtLoginPreference()
+
+        // Open setup if there's still something to do: first launch, a
+        // permission was turned off, or Claude Code is missing or signed out.
+        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
+            setupWindowController.showSetup()
+        }
+        Task { @MainActor [companionManager] in
+            await companionManager.refreshClaudeCodeSetupState()
+            if !companionManager.claudeCodeSetupState.isReady && !setupWindowController.isShowingSetup {
+                setupWindowController.showSetup()
+            }
+        }
         // startSparkleUpdater()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         companionManager.stop()
-    }
-
-    /// Registers the app as a login item so it launches automatically on
-    /// startup. Uses SMAppService which shows the app in System Settings >
-    /// General > Login Items, letting the user toggle it off if they want.
-    private func registerAsLoginItemIfNeeded() {
-        let loginItemService = SMAppService.mainApp
-        if loginItemService.status != .enabled {
-            do {
-                try loginItemService.register()
-                print("🎯 Clicky: Registered as login item")
-            } catch {
-                print("⚠️ Clicky: Failed to register as login item: \(error)")
-            }
-        }
     }
 
     private func startSparkleUpdater() {

@@ -14,6 +14,8 @@ import Foundation
 
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
+    /// fn + control: dictate into the focused text field.
+    let dictationShortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
@@ -22,6 +24,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// Published so the overlay can hide immediately on key release without
     /// waiting for the async dictation state pipeline to catch up.
     @Published private(set) var isShortcutCurrentlyPressed = false
+    private var isDictationShortcutCurrentlyPressed = false
 
     deinit {
         stop()
@@ -125,6 +128,22 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         case .released:
             isShortcutCurrentlyPressed = false
             shortcutTransitionPublisher.send(.released)
+        }
+
+        let dictationShortcutTransition = BuddyPushToTalkShortcut.dictationShortcutTransition(
+            for: eventType,
+            modifierFlagsRawValue: event.flags.rawValue,
+            wasShortcutPreviouslyPressed: isDictationShortcutCurrentlyPressed
+        )
+        switch dictationShortcutTransition {
+        case .none:
+            break
+        case .pressed:
+            isDictationShortcutCurrentlyPressed = true
+            dictationShortcutTransitionPublisher.send(.pressed)
+        case .released:
+            isDictationShortcutCurrentlyPressed = false
+            dictationShortcutTransitionPublisher.send(.released)
         }
 
         return Unmanaged.passUnretained(event)
