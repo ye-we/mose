@@ -109,6 +109,15 @@ final class CompanionManager: ObservableObject {
     /// before the next screenshot is taken.
     private static let guidedStepScreenSettleDelaySeconds: Double = 0.8
     private var guidedStepAdvanceTask: Task<Void, Never>?
+    /// The walkthrough's pinned step cards, drawn by GuidedStepCardsView.
+    @Published private(set) var guidedStepCardDeck = GuidedStepCardDeck()
+    /// The step whose card goes up when its target ring is drawn, so both appear together.
+    private var stepCardWaitingForItsTarget: (targetBeatID: UUID, stepNumber: Int, targetGlobalRect: CGRect, displayFrame: CGRect)?
+    /// Takes the closing note down a little after the walkthrough ends.
+    private var guidedStepCardsDismissTask: Task<Void, Never>?
+    private static let closingNoteDisplaySeconds: Double = 8
+    /// The answer streamed so far, which the step cards are written from.
+    private var latestAccumulatedAnswerText = ""
     /// The app the walkthrough is about (frontmost when the user asked). Clicks
     /// off the target only count as "doing something else" inside this app;
     /// clicks in other apps (say, a terminal they're also typing in) are ignored.
@@ -550,6 +559,8 @@ final class CompanionManager: ObservableObject {
     ) {
         answerGeneration += 1
         answerSegmenter = StreamingAnswerSegmenter()
+        latestAccumulatedAnswerText = ""
+        stepCardWaitingForItsTarget = nil
         answerScreenCaptures = screenCaptures
         answerScreenCaptureDate = screenCaptureDate
         answerScreenTextRecognitionTask = screenTextRecognitionTask
@@ -578,6 +589,7 @@ final class CompanionManager: ObservableObject {
     /// sentences start speaking right away; complete tags are resolved and
     /// shown when their sentence starts being spoken.
     private func receiveStreamedAnswerText(_ accumulatedAnswerText: String, isAnswerComplete: Bool) {
+        latestAccumulatedAnswerText = accumulatedAnswerText
         let answerPieces = answerSegmenter.consume(accumulatedAnswerText: accumulatedAnswerText, isAnswerComplete: isAnswerComplete)
         for answerPiece in answerPieces {
             switch answerPiece {
@@ -675,9 +687,15 @@ final class CompanionManager: ObservableObject {
     private func completeStreamingAnswer() {
         isAnswerStreamComplete = true
 
-        if !answerHasGuidedTarget {
+        let answerCardText = GuidedStepCardDeck.cardText(fromAnswerText: latestAccumulatedAnswerText)
+        if answerHasGuidedTarget {
+            guidedStepCardDeck.updateCurrentStepText(answerCardText)
+        } else {
             if pendingGuidedStepTarget != nil || guidedStepNumber > 0 {
                 print("👣 Guided steps finished")
+                guidedStepCardDeck.finish(closingText: answerCardText)
+                print("🗂️ Step cards closing note: \(answerCardText)")
+                scheduleGuidedStepCardsDismissal()
             }
             pendingGuidedStepTarget = nil
         }
@@ -714,6 +732,32 @@ final class CompanionManager: ObservableObject {
         answerHasShownAnyVisualBeat = true
         updateVisualSequenceAwaitingFlag()
         showVisualBeat(visualBeat)
+        showStepCardIfThisIsItsTarget(visualBeat)
+    }
+
+    /// Puts up the step's card as its target ring is drawn.
+    private func showStepCardIfThisIsItsTarget(_ visualBeat: ResolvedVisualBeat) {
+        guard case .sketch(let sketchBeat) = visualBeat.content,
+              let stepCardWaitingForItsTarget,
+              stepCardWaitingForItsTarget.targetBeatID == sketchBeat.id else { return }
+        guidedStepCardsDismissTask?.cancel()
+        guidedStepCardDeck.showStep(
+            number: stepCardWaitingForItsTarget.stepNumber,
+            instructionText: GuidedStepCardDeck.cardText(fromAnswerText: latestAccumulatedAnswerText),
+            targetGlobalRect: stepCardWaitingForItsTarget.targetGlobalRect,
+            displayFrame: stepCardWaitingForItsTarget.displayFrame
+        )
+        self.stepCardWaitingForItsTarget = nil
+        print("🗂️ Step card \(stepCardWaitingForItsTarget.stepNumber): \(guidedStepCardDeck.cards.last?.instructionText ?? "")")
+    }
+
+    private func scheduleGuidedStepCardsDismissal() {
+        guidedStepCardsDismissTask?.cancel()
+        guidedStepCardsDismissTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.closingNoteDisplaySeconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.guidedStepCardDeck.clear()
+        }
     }
 
     /// Publishes one beat: a point for BlueCursorView to fly to, or a mark to draw.
@@ -836,6 +880,9 @@ final class CompanionManager: ObservableObject {
         guidedStepNumber = 0
         guidedStepTurnsRemaining = Self.maximumGuidedStepTurns
         guidedAppProcessIdentifier = nil
+        guidedStepCardsDismissTask?.cancel()
+        guidedStepCardDeck.clear()
+        stepCardWaitingForItsTarget = nil
     }
 
     /// If a guided step is waiting for a click, treats this click as the user
@@ -859,6 +906,9 @@ final class CompanionManager: ObservableObject {
         }
         let targetName = pendingGuidedStepTarget.label ?? "the thing you marked"
         self.pendingGuidedStepTarget = nil
+        if didClickTarget {
+            guidedStepCardDeck.markCurrentStepDone()
+        }
         guidedStepTurnsRemaining -= 1
         clearUserInk()
 
@@ -922,6 +972,7 @@ final class CompanionManager: ObservableObject {
             height: (targetYValues.max() ?? 0) - (targetYValues.min() ?? 0)
         )
         pendingGuidedStepTarget = (targetGlobalRect, targetSketchBeat.label)
+        stepCardWaitingForItsTarget = (targetSketchBeat.id, guidedStepNumber, targetGlobalRect, resolvedVisualBeat.displayFrame)
         print("👣 Guided step \(guidedStepNumber) target: \"\(targetSketchBeat.label ?? "")\" at \(targetGlobalRect.integral)")
 
         let numberedTargetSketchBeat = ResolvedSketchBeat(
@@ -1255,9 +1306,11 @@ final class CompanionManager: ObservableObject {
     you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     rules:
-    - default to one or two short sentences. be direct and dense.
+    - keep it short: one or two sentences, about thirty words at most. say the single most useful thing, then stop. they can always ask a follow-up.
     - when they want to do something on screen, guide them one step at a time with a target on the next thing to click (see guided steps below). never walk through a whole long process in one answer.
-    - only go long when they ask you to explain an idea in depth, not for how-tos.
+    - a general question ("how do i get better at x", "what's y") gets the one key idea or tip, not a lesson.
+    - if they ask what's on their screen, sum it up in one sentence. don't describe everything you see.
+    - only go longer when they explicitly ask for depth ("explain in depth", "tell me more", "walk me through all of it"), and even then keep it under about a minute of speech.
     - all lowercase, casual, warm. no emojis.
     - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
@@ -1266,8 +1319,7 @@ final class CompanionManager: ObservableObject {
     - you can help with anything — coding, writing, general knowledge, brainstorming.
     - never say "simply" or "just".
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
-    - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
-    - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
+    - no wrap-ups, bonus tips or offers at the end, and no yes/no questions like "want me to explain more?". stop as soon as the question is answered.
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
 
     showing things on screen:

@@ -225,6 +225,9 @@ struct BlueCursorView: View {
             ScreenSketchLayer(activeSketchDrawings: activeSketchDrawings)
                 .opacity(sketchLayerOpacity)
 
+            // A guided walkthrough's steps, pinned in a corner away from the target
+            GuidedStepCardsView(guidedStepCardDeck: companionManager.guidedStepCardDeck, screenFrame: screenFrame)
+
             // What the user draws while holding the talk hotkey, in red
             Canvas { graphicsContext, _ in
                 for userInkStroke in companionManager.userInkStrokes where userInkStroke.count > 1 {

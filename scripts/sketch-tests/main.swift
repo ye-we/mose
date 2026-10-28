@@ -576,5 +576,65 @@ do {
     check(decodedJobRecord?.progress.first?.text == "writing a.txt" && decodedJobRecord?.finishedAt == nil, "jobs saved by the old Node bridge still load")
 }
 
+// MARK: Guided step cards
+do {
+    let screenFrame = CGRect(x: 0, y: 0, width: 1512, height: 982)
+    var cardDeck = GuidedStepCardDeck()
+    check(cardDeck.isEmpty, "a new walkthrough has no cards")
+
+    cardDeck.showStep(number: 1, instructionText: "Click File up in the menu bar.", targetGlobalRect: CGRect(x: 60, y: 950, width: 30, height: 20), displayFrame: screenFrame)
+    check(cardDeck.cards.count == 1 && cardDeck.cards[0].kind == .step(number: 1) && !cardDeck.cards[0].isDone, "a step shows as the current card")
+    check(cardDeck.targetGlobalRect != nil, "the card knows what it must not cover")
+
+    cardDeck.updateCurrentStepText("Click File up in the menu bar, near the top left.")
+    check(cardDeck.cards[0].instructionText == "Click File up in the menu bar, near the top left.", "the finished answer replaces the card's text")
+
+    cardDeck.markCurrentStepDone()
+    check(cardDeck.cards[0].isDone && cardDeck.targetGlobalRect == nil, "clicking the target ticks the step off")
+
+    cardDeck.showStep(number: 2, instructionText: "Now pick Export as PDF.", targetGlobalRect: CGRect(x: 70, y: 600, width: 120, height: 20), displayFrame: screenFrame)
+    cardDeck.showStep(number: 3, instructionText: "That was the wrong menu, open File again.", targetGlobalRect: CGRect(x: 60, y: 950, width: 30, height: 20), displayFrame: screenFrame)
+    check(cardDeck.cards.map(\.kind) == [.step(number: 1), .step(number: 3)], "a step that was never done is replaced by the corrected one")
+
+    cardDeck.markCurrentStepDone()
+    cardDeck.finish(closingText: "Done, your PDF is saving.")
+    check(cardDeck.cards.last?.kind == .closingNote && cardDeck.cards.last?.instructionText == "Done, your PDF is saving.", "the walkthrough ends with a closing note")
+    check(cardDeck.targetGlobalRect == nil, "nothing to avoid once it's over")
+
+    var unfinishedDeck = GuidedStepCardDeck()
+    unfinishedDeck.showStep(number: 1, instructionText: "Click Share.", targetGlobalRect: .zero, displayFrame: screenFrame)
+    unfinishedDeck.finish(closingText: "Now type the file name and press return.")
+    check(unfinishedDeck.cards.map(\.kind) == [.closingNote] && unfinishedDeck.cards[0].instructionText.hasPrefix("Now type"), "a step that isn't a click stays up as the closing note")
+
+    var finishedSilently = GuidedStepCardDeck()
+    finishedSilently.showStep(number: 1, instructionText: "Click Share.", targetGlobalRect: .zero, displayFrame: screenFrame)
+    finishedSilently.markCurrentStepDone()
+    finishedSilently.finish(closingText: "")
+    check(finishedSilently.cards.map(\.kind) == [.step(number: 1)], "an answer with nothing to say adds no note")
+
+    var longDeck = GuidedStepCardDeck()
+    for stepNumber in 1...6 {
+        longDeck.showStep(number: stepNumber, instructionText: "Step \(stepNumber).", targetGlobalRect: .zero, displayFrame: screenFrame)
+        longDeck.markCurrentStepDone()
+    }
+    check(longDeck.shownCards.count == GuidedStepCardDeck.maximumShownCardCount && longDeck.shownCards.last?.kind == .step(number: 6), "only the latest steps are shown")
+
+    longDeck.clear()
+    check(longDeck.isEmpty && longDeck.displayFrame == nil, "asking something new clears the cards")
+
+    check(GuidedStepCardDeck.cardText(fromAnswerText: "now hit share in the top right corner. [DRAW:target 1160,36,1192,60 label=\"share\"]") == "Now hit share in the top right corner.", "card text drops the tag and starts with a capital")
+    check(GuidedStepCardDeck.cardText(fromAnswerText: "click file [POINT:62,4:file] , then wait.") == "Click file, then wait.", "spacing around removed tags is tidied")
+    check(GuidedStepCardDeck.cardText(fromAnswerText: "[POINT:none]") == "", "an answer that's only a tag has no card text")
+    let longCardText = GuidedStepCardDeck.cardText(fromAnswerText: String(repeating: "open the settings panel and ", count: 12))
+    check(longCardText.count <= GuidedStepCardDeck.maximumInstructionLength + 1 && longCardText.hasSuffix("…") && !longCardText.contains("  "), "long text is cut at a word with an ellipsis: \(longCardText)")
+
+    let screenSize = CGSize(width: 1512, height: 982)
+    let cardSize = CGSize(width: 300, height: 130)
+    check(GuidedStepCardDeck.cardCorner(screenSize: screenSize, topInset: 37, cardSize: cardSize, margin: 16, avoiding: nil) == .topTrailing, "cards go top right by default")
+    check(GuidedStepCardDeck.cardCorner(screenSize: screenSize, topInset: 37, cardSize: cardSize, margin: 16, avoiding: CGRect(x: 700, y: 500, width: 80, height: 30)) == .topTrailing, "a target in the middle doesn't move them")
+    check(GuidedStepCardDeck.cardCorner(screenSize: screenSize, topInset: 37, cardSize: cardSize, margin: 16, avoiding: CGRect(x: 1400, y: 60, width: 40, height: 24)) == .bottomTrailing, "a target under the top-right corner moves them down")
+    check(GuidedStepCardDeck.cardCorner(screenSize: screenSize, topInset: 37, cardSize: cardSize, margin: 16, avoiding: CGRect(x: 1180, y: 40, width: 320, height: 930)) == .topLeading, "a tall target on the right moves them to the left")
+}
+
 print("\(checkCount - failureCount)/\(checkCount) checks passed")
 exit(failureCount == 0 ? 0 : 1)

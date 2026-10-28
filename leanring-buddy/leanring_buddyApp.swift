@@ -75,6 +75,18 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         // startSparkleUpdater()
     }
 
+    /// Opening Clicky again (Spotlight, Finder, Launchpad) while it's running
+    /// brings it up: setup if that isn't finished, otherwise the panel. That
+    /// keeps it reachable when the menu bar is too full to show its icon.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !companionManager.hasCompletedOnboarding || setupWindowController?.isShowingSetup == true {
+            setupWindowController?.showSetup()
+        } else {
+            menuBarPanelManager?.showPanelFromReopen()
+        }
+        return false
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         companionManager.stop()
     }

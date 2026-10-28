@@ -20,6 +20,8 @@ swiftc -o "$gallery_binary_path" \
   "$repository_root/leanring-buddy/BackgroundAgentJobs.swift" \
   "$repository_root/leanring-buddy/ClaudeCodeCLI.swift" \
   "$repository_root/leanring-buddy/ChildProcessSupport.swift" \
+  "$repository_root/leanring-buddy/GuidedStepCardDeck.swift" \
+  "$repository_root/leanring-buddy/GuidedStepCardsView.swift" \
   "$repository_root/scripts/ui-gallery/Stubs.swift" \
   "$repository_root/scripts/ui-gallery/main.swift"
 

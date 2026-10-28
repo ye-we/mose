@@ -62,6 +62,31 @@ MainActor.assumeIsolated {
     render(CompanionPanelView(companionManager: panelReady).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-ready")
     let panelJobs = manager { $0.claudeCodeSetupState = .ready(account); $0.hasMicrophonePermission = true; $0.hasAccessibilityPermission = true; $0.hasScreenRecordingPermission = true; $0.hasScreenContentPermission = true; $0.hasCompletedOnboarding = true; $0.backgroundAgentJobs = jobs; $0.voiceState = .responding; $0.selectedModel = "claude-haiku-4-5" }
     render(CompanionPanelView(companionManager: panelJobs).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-with-tasks")
+    // Step cards over a real app screenshot, as the overlay would show them
+    let fixtureScreenshot = NSImage(contentsOfFile: CommandLine.arguments[0].components(separatedBy: "/").dropLast().joined(separator: "/") + "/codex-app-screenshot.jpg")
+        ?? NSImage(contentsOfFile: ProcessInfo.processInfo.environment["CLICKY_GALLERY_SCREENSHOT"] ?? "")
+    let fakeScreenFrame = CGRect(x: 0, y: 0, width: 1280, height: 820)
+    func stepCardsScene(_ deck: GuidedStepCardDeck) -> some View {
+        ZStack {
+            if let fixtureScreenshot { Image(nsImage: fixtureScreenshot).resizable().frame(width: 1280, height: 820) }
+            GuidedStepCardsView(guidedStepCardDeck: deck, screenFrame: fakeScreenFrame)
+        }
+        .frame(width: 1280, height: 820)
+    }
+    var firstStepDeck = GuidedStepCardDeck()
+    firstStepDeck.showStep(number: 1, instructionText: "Click File up in the menu bar.", targetGlobalRect: CGRect(x: 60, y: 790, width: 30, height: 20), displayFrame: fakeScreenFrame)
+    render(stepCardsScene(firstStepDeck), size: NSSize(width: 1280, height: 820), name: "cards-1-first-step")
+    var thirdStepDeck = firstStepDeck
+    thirdStepDeck.markCurrentStepDone()
+    thirdStepDeck.showStep(number: 2, instructionText: "Now pick Export as PDF near the bottom of the menu.", targetGlobalRect: CGRect(x: 70, y: 400, width: 120, height: 20), displayFrame: fakeScreenFrame)
+    thirdStepDeck.markCurrentStepDone()
+    thirdStepDeck.showStep(number: 3, instructionText: "Hit Save in the top right corner of the dialog.", targetGlobalRect: CGRect(x: 1180, y: 760, width: 60, height: 24), displayFrame: fakeScreenFrame)
+    render(stepCardsScene(thirdStepDeck), size: NSSize(width: 1280, height: 820), name: "cards-2-target-top-right")
+    var closedDeck = thirdStepDeck
+    closedDeck.markCurrentStepDone()
+    closedDeck.finish(closingText: "Done, your PDF is saving to Downloads.")
+    render(stepCardsScene(closedDeck), size: NSSize(width: 1280, height: 820), name: "cards-3-done")
+
     let panelProblem = manager { $0.claudeCodeSetupState = .notSignedIn; $0.hasCompletedOnboarding = true }
     render(CompanionPanelView(companionManager: panelProblem).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-signed-out")
 }

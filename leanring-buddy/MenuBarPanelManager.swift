@@ -175,11 +175,14 @@ final class MenuBarPanelManager: NSObject {
         panel = menuBarPanel
     }
 
+    /// Opens the panel when the menu bar icon may be out of sight, for example
+    /// when the user opens Clicky again from Spotlight or the Finder.
+    func showPanelFromReopen() {
+        showPanel()
+    }
+
     private func positionPanelBelowStatusItem() {
         guard let panel else { return }
-        guard let buttonWindow = statusItem?.button?.window else { return }
-
-        let statusItemFrame = buttonWindow.frame
         let gapBelowMenuBar: CGFloat = 4
 
         // Calculate the panel's content height from the hosting view's fitting size
@@ -187,14 +190,38 @@ final class MenuBarPanelManager: NSObject {
         let fittingSize = panel.contentView?.fittingSize ?? CGSize(width: panelWidth, height: panelHeight)
         let actualPanelHeight = fittingSize.height
 
-        // Horizontally center the panel beneath the status item icon
-        let panelOriginX = statusItemFrame.midX - (panelWidth / 2)
-        let panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
+        // Horizontally center the panel beneath the status item icon, or put it
+        // at the top right of the screen when the icon can't be seen
+        let panelOriginX: CGFloat
+        let panelOriginY: CGFloat
+        if let statusItemFrame = visibleStatusItemFrame() {
+            panelOriginX = statusItemFrame.midX - (panelWidth / 2)
+            panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
+        } else {
+            let screen = NSScreen.main ?? NSScreen.screens[0]
+            let screenEdgeMargin: CGFloat = 12
+            panelOriginX = screen.visibleFrame.maxX - panelWidth - screenEdgeMargin
+            panelOriginY = screen.visibleFrame.maxY - actualPanelHeight - gapBelowMenuBar
+        }
 
         panel.setFrame(
             NSRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: actualPanelHeight),
             display: true
         )
+    }
+
+    /// The menu bar icon's frame, or nil when it isn't visible. On a Mac with
+    /// a notch, icons that don't fit are hidden behind or to the left of it.
+    private func visibleStatusItemFrame() -> NSRect? {
+        guard let buttonWindow = statusItem?.button?.window,
+              let screen = buttonWindow.screen ?? NSScreen.main else { return nil }
+        let statusItemFrame = buttonWindow.frame
+        guard screen.frame.intersects(statusItemFrame) else { return nil }
+        if let visibleAreaRightOfNotch = screen.auxiliaryTopRightArea,
+           statusItemFrame.minX < visibleAreaRightOfNotch.minX {
+            return nil
+        }
+        return statusItemFrame
     }
 
     // MARK: - Click Outside Dismissal
