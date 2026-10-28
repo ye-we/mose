@@ -4,7 +4,7 @@
 //
 //  Cuts Claude's answer into sentences while it's still streaming in, so
 //  Clicky can start speaking the first sentence instead of waiting for the
-//  whole answer. POINT, DRAW, AGENT and SESSION tags are pulled out as they complete
+//  whole answer. POINT, DRAW, AGENT, SESSION, REMEMBER and FORGET tags are pulled out as they complete
 //  and attached to the sentence they follow, so each mark can appear exactly
 //  when that sentence starts being spoken.
 //
@@ -107,7 +107,24 @@ struct StreamingAnswerSegmenter {
     }
 
     static func isClickyTag(_ bracketedText: String) -> Bool {
-        bracketedText.range(of: #"^\[\s*(POINT|DRAW|AGENT|SESSION)\s*:"#, options: [.regularExpression, .caseInsensitive]) != nil
+        bracketedText.range(of: #"^\[\s*(POINT|DRAW|AGENT|SESSION|REMEMBER|FORGET)\s*:"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// "[REMEMBER:they edit videos in final cut pro]": a fact to keep.
+    static func isRememberTag(_ tagText: String) -> Bool {
+        tagText.range(of: #"^\[\s*REMEMBER\s*:"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// "[FORGET:they edit videos in final cut pro]" or "[FORGET:everything]".
+    static func isForgetTag(_ tagText: String) -> Bool {
+        tagText.range(of: #"^\[\s*FORGET\s*:"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// What's after the colon in a tag, without the brackets.
+    static func tagContent(_ tagText: String) -> String {
+        guard let colonIndex = tagText.firstIndex(of: ":") else { return "" }
+        return String(tagText[tagText.index(after: colonIndex)...])
+            .trimmingCharacters(in: CharacterSet(charactersIn: "] \n"))
     }
 
     /// "[SESSION:new]": the user asked to start a new conversation.

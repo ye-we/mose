@@ -66,6 +66,9 @@ final class CompanionManager: ObservableObject {
     private var answerHasShownAnyVisualBeat = false
     private var answerPointBeatCount = 0
     private var answerHasGuidedTarget = false
+    /// The answer said what to click without marking it, so Claude is asked
+    /// for the mark once it's been said (GuidedStepAnswerCheck).
+    private var answerNeedsItsMissingTargetMarked = false
     /// Bumped for every new answer so callbacks from an older one are ignored.
     private var answerGeneration = 0
 
@@ -108,6 +111,12 @@ final class CompanionManager: ObservableObject {
     /// Time for the app to react to the click (open a menu, switch a pane)
     /// before the next screenshot is taken.
     private static let guidedStepScreenSettleDelaySeconds: Double = 0.8
+    /// Claude has been asked to mark a click it only described. Not again
+    /// until a target is drawn, so the follow-up can't loop.
+    private var hasAskedForMissingGuidedTarget = false
+    /// What that answer said, for the step card when the follow-up only
+    /// marks the click and says nothing.
+    private var cardTextOfAnswerMissingItsTarget: String?
     private var guidedStepAdvanceTask: Task<Void, Never>?
     /// The walkthrough's pinned step cards, drawn by GuidedStepCardsView.
     @Published private(set) var guidedStepCardDeck = GuidedStepCardDeck()
@@ -210,9 +219,34 @@ final class CompanionManager: ObservableObject {
         return ClaudeCodeChatClient(model: "claude-haiku-4-5", isExtendedThinkingEnabled: false, keepsProcessWaitingForNextRequest: false)
     }()
     private var conversationIDsBeingSummarized: Set<UUID> = []
+
+    // MARK: - Memory
+
+    /// Lasting facts about the user, kept across conversations (UserMemory).
+    let userMemoryStore = UserMemoryStore()
+    /// Finished conversations are looked through one at a time, in the background.
+    private var isLookingThroughConversationsForMemory = false
+    /// At most this many per look, so a first launch with memory doesn't go
+    /// through a whole backlog at once.
+    private static let maximumConversationsLookedThroughAtOnce = 3
+
+    // MARK: - Connected apps for background tasks
+
+    /// The user's apps (Claude Code MCP servers) that background tasks may
+    /// use, turned on one by one in the Connected Apps window. None at first.
+    @Published private(set) var agentConnectedAppServerNames: [String] =
+        UserDefaults.standard.stringArray(forKey: "backgroundAgentConnectedAppServerNames") ?? []
+    /// What `claude mcp list` found the last time it was asked. Nil until then.
+    @Published private(set) var availableConnectedApps: [ClaudeCodeConnectedApp]?
+    @Published private(set) var isLoadingConnectedApps = false
+    @Published private(set) var connectedAppsLoadingProblem: String?
     /// Claude answered with [SESSION:new]: the user asked to start over in
     /// their own words, so this exchange begins nothing and the next is fresh.
     private var answerAskedForNewConversation = false
+    /// What the answer's [FORGET:...] tags asked to forget. Applied once the
+    /// answer is in, so a start-over that also says [FORGET:everything]
+    /// can't wipe memory by accident.
+    private var answerForgetRequests: [String] = []
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -378,6 +412,11 @@ final class CompanionManager: ObservableObject {
             Task { await useBridgeVoiceIfConfigured() }
         }
         Task { await loadBackgroundAgentJobsAtLaunch() }
+        // Conversations that ended while Clicky wasn't running
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            self?.learnFromFinishedConversationsIfNeeded()
+        }
         // A quick restart picks the conversation back up
         if let mostRecentConversation = conversationStore.sessions.first,
            Date().timeIntervalSince(mostRecentConversation.lastActivityAt) < Self.conversationIdleLimitSeconds {
@@ -435,7 +474,9 @@ final class CompanionManager: ObservableObject {
         if let externalBridgeBaseURL = Self.externalBridgeBaseURL {
             return BackgroundAgentJobsClient(bridgeBaseURL: externalBridgeBaseURL)
         }
-        return BackgroundAgentJobRunner()
+        let backgroundAgentJobRunner = BackgroundAgentJobRunner()
+        backgroundAgentJobRunner.connectedAppServerNames = agentConnectedAppServerNames
+        return backgroundAgentJobRunner
     }()
     private var backgroundAgentJobsPollingTask: Task<Void, Never>?
     /// Jobs whose finish has already been announced (or that finished before launch).
@@ -582,6 +623,7 @@ final class CompanionManager: ObservableObject {
         latestAccumulatedAnswerText = ""
         stepCardWaitingForItsTarget = nil
         answerAskedForNewConversation = false
+        answerForgetRequests = []
         answerScreenCaptures = screenCaptures
         answerScreenCaptureDate = screenCaptureDate
         answerScreenTextRecognitionTask = screenTextRecognitionTask
@@ -593,6 +635,7 @@ final class CompanionManager: ObservableObject {
         answerHasShownAnyVisualBeat = false
         answerPointBeatCount = 0
         answerHasGuidedTarget = false
+        answerNeedsItsMissingTargetMarked = false
 
         let currentAnswerGeneration = answerGeneration
         sentenceSpeaker.onSentenceStartedSpeaking = { [weak self] sentenceIndex in
@@ -622,6 +665,10 @@ final class CompanionManager: ObservableObject {
                     startBackgroundAgentJob(fromAgentTag: tagText)
                 } else if StreamingAnswerSegmenter.isSessionTag(tagText) {
                     answerAskedForNewConversation = true
+                } else if StreamingAnswerSegmenter.isRememberTag(tagText) {
+                    rememberFact(fromRememberTag: tagText)
+                } else if StreamingAnswerSegmenter.isForgetTag(tagText) {
+                    answerForgetRequests.append(StreamingAnswerSegmenter.tagContent(tagText))
                 } else {
                     resolveVisualTagInOrder(tagText, sentenceIndex: sentenceIndex)
                 }
@@ -706,13 +753,23 @@ final class CompanionManager: ObservableObject {
 
     /// Everything Claude wrote has been handled. Marks whose sentence will
     /// never be spoken (an answer that's only tags, or speech that failed) are
-    /// shown now, and an answer without a target ends a guided walkthrough.
+    /// shown now, and an answer without a target ends a guided walkthrough,
+    /// unless it said what to click without marking it.
     private func completeStreamingAnswer() {
         isAnswerStreamComplete = true
 
-        let answerCardText = GuidedStepCardDeck.cardText(fromAnswerText: latestAccumulatedAnswerText)
+        let answerCardText = currentAnswerCardText()
+        answerNeedsItsMissingTargetMarked = !answerHasGuidedTarget
+            && !hasAskedForMissingGuidedTarget
+            && guidedStepTurnsRemaining > 0
+            && !answerAskedForNewConversation
+            && GuidedStepAnswerCheck.isClickInstructionWithoutTarget(latestAccumulatedAnswerText)
         if answerHasGuidedTarget {
             guidedStepCardDeck.updateCurrentStepText(answerCardText)
+        } else if answerNeedsItsMissingTargetMarked {
+            // Not the end of the walkthrough: the mark is asked for next
+            print("👣 Said a click without marking it")
+            pendingGuidedStepTarget = nil
         } else {
             if pendingGuidedStepTarget != nil || guidedStepNumber > 0 {
                 print("👣 Guided steps finished")
@@ -733,6 +790,8 @@ final class CompanionManager: ObservableObject {
             print("🎯 Element pointing: no element")
         }
         updateVisualSequenceAwaitingFlag()
+        // Used by a tag-only follow-up's card, which went up just above
+        cardTextOfAnswerMissingItsTarget = nil
 
         // Speech may have caught up with Claude before the answer ended
         if voiceState == .responding && !sentenceSpeaker.isSpeaking {
@@ -766,12 +825,23 @@ final class CompanionManager: ObservableObject {
         guidedStepCardsDismissTask?.cancel()
         guidedStepCardDeck.showStep(
             number: stepCardWaitingForItsTarget.stepNumber,
-            instructionText: GuidedStepCardDeck.cardText(fromAnswerText: latestAccumulatedAnswerText),
+            instructionText: currentAnswerCardText(),
             targetGlobalRect: stepCardWaitingForItsTarget.targetGlobalRect,
             displayFrame: stepCardWaitingForItsTarget.displayFrame
         )
         self.stepCardWaitingForItsTarget = nil
         print("🗂️ Step card \(stepCardWaitingForItsTarget.stepNumber): \(guidedStepCardDeck.cards.last?.instructionText ?? "")")
+    }
+
+    /// The step card text for the answer streaming in. A follow-up that only
+    /// marks the click has no words, so its card says what the answer before
+    /// it said.
+    private func currentAnswerCardText() -> String {
+        let answerCardText = GuidedStepCardDeck.cardText(fromAnswerText: latestAccumulatedAnswerText)
+        if answerCardText.isEmpty, let cardTextOfAnswerMissingItsTarget {
+            return cardTextOfAnswerMissingItsTarget
+        }
+        return answerCardText
     }
 
     private func scheduleGuidedStepCardsDismissal() {
@@ -824,13 +894,14 @@ final class CompanionManager: ObservableObject {
             matching: [.leftMouseDown, .rightMouseDown, .scrollWheel]
         ) { [weak self] inputEvent in
             let isLeftClick = inputEvent.type == .leftMouseDown
+            let isRightClick = inputEvent.type == .rightMouseDown
             let clickLocation = NSEvent.mouseLocation
             Task { @MainActor in
                 guard let self else { return }
                 self.lastScreenChangingInputDate = Date()
 
                 // In a guided walkthrough the click is the user doing the step
-                if isLeftClick && self.advanceGuidedStepIfWaiting(afterClickAt: clickLocation) {
+                if (isLeftClick || isRightClick) && self.advanceGuidedStepIfWaiting(afterClickAt: clickLocation, wasRightClick: isRightClick) {
                     return
                 }
 
@@ -906,15 +977,41 @@ final class CompanionManager: ObservableObject {
         guidedStepCardsDismissTask?.cancel()
         guidedStepCardDeck.clear()
         stepCardWaitingForItsTarget = nil
+        hasAskedForMissingGuidedTarget = false
+        cardTextOfAnswerMissingItsTarget = nil
+    }
+
+    /// The answer said what to click without marking it ("open system
+    /// settings from the apple menu"). Once it's been said, Claude gets a
+    /// fresh screenshot and is asked to mark only the first click, so the
+    /// walkthrough goes on from there.
+    private func askForTheMissingGuidedTarget() {
+        hasAskedForMissingGuidedTarget = true
+        cardTextOfAnswerMissingItsTarget = GuidedStepCardDeck.cardText(fromAnswerText: latestAccumulatedAnswerText)
+        guidedStepTurnsRemaining -= 1
+        print("👣 Asking Claude to mark the click, \(guidedStepTurnsRemaining) automatic steps left")
+
+        guidedStepAdvanceTask?.cancel()
+        guidedStepAdvanceTask = Task {
+            while sentenceSpeaker.isSpeaking || voiceState == .listening {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            guard !Task.isCancelled else { return }
+            // Keep a transient overlay up for the mark that's coming
+            transientHideTask?.cancel()
+            sendTranscriptToClaudeWithScreenshot(transcript: GuidedStepAnswerCheck.missingTargetFollowUpTranscript)
+        }
     }
 
     /// If a guided step is waiting for a click, treats this click as the user
     /// doing it: stops talking, wipes the old step, waits for the app to update
     /// and asks Claude for the next step. Clicks off the target still advance,
     /// and Claude is told, so it can see what happened and steer them back.
+    /// A right-click counts too, for steps like "right-click an empty spot".
     /// Returns whether the click was used.
     @discardableResult
-    func advanceGuidedStepIfWaiting(afterClickAt clickLocation: CGPoint) -> Bool {
+    func advanceGuidedStepIfWaiting(afterClickAt clickLocation: CGPoint, wasRightClick: Bool = false) -> Bool {
         guard let pendingGuidedStepTarget,
               guidedStepTurnsRemaining > 0,
               voiceState != .listening else { return false }
@@ -939,9 +1036,10 @@ final class CompanionManager: ObservableObject {
         sentenceSpeaker.stopSpeaking()
         cancelVisualSequence()
 
+        let clickedWords = wasRightClick ? "right-clicked" : "clicked"
         let followUpTranscript = didClickTarget
-            ? "(guided step) i clicked \(targetName). what's next?"
-            : "(guided step) i clicked somewhere else instead of \(targetName). what now?"
+            ? "(guided step) i \(clickedWords) \(targetName). what's next?"
+            : "(guided step) i \(clickedWords) somewhere else instead of \(targetName). what now?"
         print("👣 Guided step: \(didClickTarget ? "clicked the target" : "clicked elsewhere"), \(guidedStepTurnsRemaining) automatic steps left")
 
         guidedStepAdvanceTask?.cancel()
@@ -986,6 +1084,7 @@ final class CompanionManager: ObservableObject {
         }
         guidedStepNumber += 1
         answerHasGuidedTarget = true
+        hasAskedForMissingGuidedTarget = false
         let targetXValues = targetSketchBeat.globalScreenPoints.map(\.x)
         let targetYValues = targetSketchBeat.globalScreenPoints.map(\.y)
         let targetGlobalRect = CGRect(
@@ -1348,6 +1447,9 @@ final class CompanionManager: ObservableObject {
     conversations:
     you remember this conversation. when it's long, its start comes to you as a short summary. if they ask to start over or to forget what you talked about, in any words, say a few words like "okay, fresh start." and add [SESSION:new]. don't add it just because they changed the subject.
 
+    memory:
+    you may also get a short list of what you remember about them from earlier conversations. use it quietly when it helps, like knowing which apps they use or what they're working on, and don't recite it. if they ask you to remember something, say a few words like "got it, i'll remember that." and add [REMEMBER:the fact, short and about "they"], for example [REMEMBER:they keep their invoices in dropbox]. if they ask you to forget something you remember about them, say so in a few words and add [FORGET:that fact as you have it], or [FORGET:everything] for all of it. starting over or forgetting what you talked about is only [SESSION:new]: never add [FORGET:...] for it, since that would erase what you know about them. use [FORGET:...] only when they clearly mean what you remember about them, like "forget that i use dropbox" or "forget everything you know about me". if they ask what you remember about them, tell them in a sentence or two.
+
     showing things on screen:
     you can point and draw right on top of their screen, like a friend leaning over their shoulder with a marker. the cursor flies over and does it while you talk. use it whenever showing would help more than telling: where a button is, what to click next, which setting matters, what's wrong. skip it for general questions that have nothing to do with the screen.
 
@@ -1373,15 +1475,15 @@ final class CompanionManager: ObservableObject {
     - put each tag right after the sentence it goes with. they're shown in order as you say each sentence.
     - labels are one to three words, lowercase. never sentences.
     - most answers need one to three marks. never more than six.
-    - if their next move is a click, mark it with a target, not a circle, even when it's a single click. circles, arrows and the rest are for explaining and showing where things are.
-    - only mark things you can see in the screenshot right now. if a step's button only shows up after an earlier click (like something inside a menu that isn't open yet), say that step in words, and they can ask again once it's open.
+    - if their next move is a click, mark it with a target, not a circle, even when it's a single click or a right-click. circles, arrows and the rest are for explaining and showing where things are.
+    - only mark things you can see in the screenshot right now. if what they need only shows up after an earlier click (like an item inside a menu that isn't open yet), the next step is that earlier click: mark it, and you'll see the rest once it's open.
     - if showing wouldn't help at all, end with [POINT:none].
 
     background tasks:
-    if they ask you to go do something that takes real work rather than a quick answer, like researching a topic, writing or making a file (a document, a pdf, a spreadsheet, a small website), comparing options, or tidying files, hand it to a background agent: say in one short sentence that you're on it, then add [AGENT:short title|the full brief]. the brief goes to another claude that can't hear them and only sees a screenshot of this screen, so spell out the goal, every detail they gave, and what to make in what format. no square brackets inside the brief. it can browse the web and make files, but it can't use their accounts or send anything, so don't promise that. don't use it for quick questions or for clicking through an app with them; you do those yourself. if you're not sure they want you to go off and do it, ask.
+    if they ask you to go do something that takes real work rather than a quick answer, like researching a topic, writing or making a file (a document, a pdf, a spreadsheet, a small website), comparing options, or tidying files, hand it to a background agent: say in one short sentence that you're on it, then add [AGENT:short title|the full brief]. the brief goes to another claude that can't hear them and only sees a screenshot of this screen, so spell out the goal, every detail they gave, and what to make in what format. no square brackets inside the brief. it can browse the web and make files. it can't use their accounts, except apps you're told background tasks can use, and it never sends anything, so don't promise that. don't use it for quick questions or for clicking through an app with them; you do those yourself. if you're not sure they want you to go off and do it, ask.
 
     guided steps:
-    when they want help doing something on screen that takes a few clicks, walk them through it one step at a time. say only the very next step in one short sentence and mark the exact thing to click with [DRAW:target x1,y1,x2,y2 label="..."], a tight box around it like a circle. as soon as they click, you automatically get a fresh screenshot and a message like "(guided step) i clicked export. what's next?", and you give the next step the same way. if they clicked somewhere else, look at the new screen and get them back on track. if the next step isn't a click (typing, dragging, a keyboard shortcut), say it plainly without a target and they'll tell you when they're ready. when the task is done, say so in a few words and don't add a target. at most one target per answer; you can still add other marks to explain.
+    when they want help doing something on screen that takes a few clicks, walk them through it one step at a time. say only the very next step in one short sentence and mark the exact thing to click with [DRAW:target x1,y1,x2,y2 label="..."], a tight box around it like a circle. one click per answer: never fold two clicks into one sentence, like "open system settings from the apple menu" or "go to file, then export". if it's inside a menu or panel that isn't open, the step is opening it. as soon as they click, you automatically get a fresh screenshot and a message like "(guided step) i clicked export. what's next?", and you give the next step the same way. if they clicked somewhere else, look at the new screen and get them back on track. if the next step isn't a click (typing, dragging, a keyboard shortcut), say it plainly without a target and they'll tell you when they're ready. when the task is done, say so in a few words and don't add a target. at most one target per answer; you can still add other marks to explain.
 
     examples:
     - user asks how to color grade in final cut: "open the color inspector with this button up in the toolbar. [DRAW:target 1086,30,1114,54 label="color inspector"]"
@@ -1392,6 +1494,7 @@ final class CompanionManager: ObservableObject {
     - user asks why their formula is broken: "this cell points at the wrong column. [DRAW:cross 402,310,470,330] it should use column c instead. [DRAW:arrow 600,250,520,318 label="use column c"]"
     - element is on screen 2 (not where cursor is): "that's on your other monitor, the terminal window. [POINT:400,300:terminal:screen2]"
     - user asks how to export their document as a pdf: "click file up in the menu bar. [DRAW:target 62,4,92,22 label="file"]" then, after "(guided step) i clicked file. what's next?": "now pick export as pdf near the bottom of the menu. [DRAW:target 70,410,190,430 label="export as pdf"]"
+    - user asks how to open system settings: "click the apple logo in the top left corner. [DRAW:target 8,2,34,24 label="apple menu"]" then, after "(guided step) i clicked apple menu. what's next?": "now pick system settings. [DRAW:target 20,90,170,110 label="system settings"]"
     """
 
     // MARK: - AI Response Pipeline
@@ -1439,11 +1542,130 @@ final class CompanionManager: ObservableObject {
     func startNewConversation() {
         resetGuidedSteps()
         conversationStore.startNewSession()
+        learnFromFinishedConversationsIfNeeded()
     }
 
     func continueConversation(withID conversationID: UUID) {
         resetGuidedSteps()
         conversationStore.resumeSession(withID: conversationID)
+        learnFromFinishedConversationsIfNeeded()
+    }
+
+    // MARK: - Connected apps for background tasks
+
+    func refreshConnectedApps() {
+        guard !isLoadingConnectedApps else { return }
+        isLoadingConnectedApps = true
+        connectedAppsLoadingProblem = nil
+        Task { [weak self] in
+            do {
+                let loadedConnectedApps = try await AgentConnectedApps.loadConnectedApps()
+                self?.availableConnectedApps = loadedConnectedApps
+                print("🔌 Connected apps: \(loadedConnectedApps.filter { $0.connectionStatus == .connected }.map(\.displayName).joined(separator: ", "))")
+            } catch {
+                self?.connectedAppsLoadingProblem = "Claude Code couldn't list your apps: \(error.localizedDescription)"
+            }
+            self?.isLoadingConnectedApps = false
+        }
+    }
+
+    func setAgentConnectedApp(serverName: String, isAllowed: Bool) {
+        var updatedServerNames = agentConnectedAppServerNames.filter { $0 != serverName }
+        if isAllowed { updatedServerNames.append(serverName) }
+        agentConnectedAppServerNames = updatedServerNames
+        UserDefaults.standard.set(updatedServerNames, forKey: "backgroundAgentConnectedAppServerNames")
+        (backgroundAgentJobService as? BackgroundAgentJobRunner)?.connectedAppServerNames = updatedServerNames
+        print("🔌 Background tasks may use: \(updatedServerNames.isEmpty ? "no apps" : updatedServerNames.joined(separator: ", "))")
+    }
+
+    /// What Claude gets about the user before the conversation: memory, and
+    /// which apps background tasks may use.
+    private func notesAboutUserForClaude() -> String? {
+        let noteParts = [
+            UserMemoryContext.noteForClaude(facts: userMemoryStore.facts, isMemoryEnabled: userMemoryStore.isMemoryEnabled),
+            AgentConnectedApps.noteForVoiceAnswers(
+                appDisplayNames: agentConnectedAppServerNames.map(AgentConnectedApps.displayName(forServerName:))
+            ),
+        ].compactMap { $0 }
+        return noteParts.isEmpty ? nil : noteParts.joined(separator: "\n\n")
+    }
+
+    // MARK: - Memory
+
+    /// "[REMEMBER:they keep their invoices in dropbox]": the user asked.
+    private func rememberFact(fromRememberTag rememberTagText: String) {
+        guard userMemoryStore.isMemoryEnabled else { return }
+        let factText = StreamingAnswerSegmenter.tagContent(rememberTagText)
+        if let rememberedFact = userMemoryStore.remember(factText, origin: .askedToRemember, conversationID: conversationStore.currentSessionID) {
+            print("🧠 Memory: remembered \"\(rememberedFact.text)\"")
+        }
+    }
+
+    /// "[FORGET:they keep their invoices in dropbox]" or "[FORGET:everything]",
+    /// once the whole answer is in. Starting over only clears the
+    /// conversation, so "everything" is ignored in an answer that also said
+    /// [SESSION:new].
+    private func applyAnswerForgetRequests() {
+        let forgetRequestsToApply = UserMemoryText.forgetRequestsToApply(
+            answerForgetRequests,
+            answerAskedForNewConversation: answerAskedForNewConversation
+        )
+        if forgetRequestsToApply.count < answerForgetRequests.count {
+            print("🧠 Memory: kept everything, the user only asked to start over")
+        }
+        for forgetRequest in forgetRequestsToApply {
+            let forgottenFacts = userMemoryStore.forget(matching: forgetRequest)
+            print("🧠 Memory: forgot \(forgottenFacts.count) fact(s) for \"\(forgetRequest)\"")
+        }
+        answerForgetRequests = []
+    }
+
+    /// Looks through conversations that are over for lasting facts about the
+    /// user, one at a time in the background, with Haiku.
+    private func learnFromFinishedConversationsIfNeeded() {
+        guard userMemoryStore.isMemoryEnabled, !isLookingThroughConversationsForMemory else { return }
+        let conversationsToLearnFrom = UserMemoryContext.conversationsToLearnFrom(
+            in: conversationStore.sessions,
+            currentSessionID: conversationStore.currentSessionID,
+            now: Date(),
+            idleLimitSeconds: Self.conversationIdleLimitSeconds
+        ).prefix(Self.maximumConversationsLookedThroughAtOnce)
+        guard !conversationsToLearnFrom.isEmpty else { return }
+
+        isLookingThroughConversationsForMemory = true
+        Task { [weak self] in
+            for conversationSession in conversationsToLearnFrom {
+                guard let self, self.userMemoryStore.isMemoryEnabled else { break }
+                await self.learnFacts(fromFinishedConversation: conversationSession)
+            }
+            self?.isLookingThroughConversationsForMemory = false
+        }
+    }
+
+    private func learnFacts(fromFinishedConversation conversationSession: ConversationSession) async {
+        let learningRequest = UserMemoryContext.learningRequest(
+            conversationSession: conversationSession,
+            knownFacts: userMemoryStore.facts
+        )
+        do {
+            let (learningReply, _) = try await conversationSummaryBackend.analyzeImageStreaming(
+                images: [],
+                systemPrompt: UserMemoryContext.learningSystemPrompt,
+                userPrompt: learningRequest,
+                onTextChunk: { _ in }
+            )
+            let (factsToAdd, factsToDrop) = UserMemoryContext.parseLearningReply(learningReply)
+            for factToDrop in factsToDrop {
+                userMemoryStore.dropFacts(sameAs: factToDrop)
+            }
+            for factToAdd in factsToAdd {
+                userMemoryStore.remember(factToAdd, origin: .learnedFromConversation, conversationID: conversationSession.id)
+            }
+            conversationStore.markReviewedForMemory(sessionWithID: conversationSession.id, exchangeCount: conversationSession.exchanges.count)
+            print("🧠 Memory: looked through \"\(conversationSession.title)\": \(factsToAdd.count) new, \(factsToDrop.count) out of date")
+        } catch {
+            print("⚠️ Couldn't look through \"\(conversationSession.title)\" for memory: \(error.localizedDescription)")
+        }
     }
 
     private func speakConversationConfirmation(_ confirmationText: String) {
@@ -1538,6 +1760,7 @@ final class CompanionManager: ObservableObject {
                 let (fullResponseText, _) = try await chatBackend.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    notesAboutUser: notesAboutUserForClaude(),
                     earlierConversationSummary: earlierConversationSummary,
                     conversationHistory: historyForAPI,
                     userPrompt: didUserDrawOnScreen
@@ -1558,6 +1781,7 @@ final class CompanionManager: ObservableObject {
                 await waitForStreamingAnswerToSettle()
 
                 completedVoiceAnswerCount += 1
+                applyAnswerForgetRequests()
                 if answerAskedForNewConversation {
                     conversationStore.startNewSession()
                     print("🧠 Claude started a new conversation")
@@ -1574,6 +1798,11 @@ final class CompanionManager: ObservableObject {
                     ))
                     print("🧠 Conversation \"\(updatedConversation.title)\": \(updatedConversation.exchanges.count) exchanges")
                     summarizeEarlierExchangesIfNeeded(in: updatedConversation)
+                }
+                // A new conversation (by voice, tag or the idle limit) means the last one is over
+                learnFromFinishedConversationsIfNeeded()
+                if answerNeedsItsMissingTargetMarked {
+                    askForTheMissingGuidedTarget()
                 }
                 ClickyAnalytics.trackAIResponseReceived(response: ClaudeVisualTagParser.parseVisualBeats(from: fullResponseText).spokenText)
             } catch where Self.isCancellation(error) {
@@ -2093,6 +2322,9 @@ final class CompanionManager: ObservableObject {
                 )
                 receiveStreamedAnswerText(responseText, isAnswerComplete: true)
                 await waitForStreamingAnswerToSettle()
+                if answerNeedsItsMissingTargetMarked {
+                    askForTheMissingGuidedTarget()
+                }
             } catch {
                 print("⚠️ Debug present failed: \(error)")
             }

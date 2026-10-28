@@ -19,11 +19,15 @@ import Foundation
 protocol CompanionChatBackend: AnyObject {
     var model: String { get set }
 
-    /// `earlierConversationSummary` stands in for exchanges too old to send
-    /// word for word; `conversationHistory` is the recent ones, oldest first.
+    /// `notesAboutUser` is what Clicky remembers about the user from earlier
+    /// conversations (UserMemoryContext) and which of their apps background
+    /// tasks may use (AgentConnectedApps); `earlierConversationSummary` stands
+    /// in for exchanges too old to send word for word; `conversationHistory`
+    /// is the recent ones, oldest first.
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
+        notesAboutUser: String?,
         earlierConversationSummary: String?,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
         userPrompt: String,
@@ -41,6 +45,25 @@ protocol CompanionChatBackend: AnyObject {
 extension CompanionChatBackend {
     func prepareForUpcomingRequest(systemPrompt: String) {}
     func shutDown() {}
+
+    func analyzeImageStreaming(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        earlierConversationSummary: String?,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
+        userPrompt: String,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval) {
+        try await analyzeImageStreaming(
+            images: images,
+            systemPrompt: systemPrompt,
+            notesAboutUser: nil,
+            earlierConversationSummary: earlierConversationSummary,
+            conversationHistory: conversationHistory,
+            userPrompt: userPrompt,
+            onTextChunk: onTextChunk
+        )
+    }
 
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
@@ -163,6 +186,7 @@ final class ClaudeCodeChatClient: CompanionChatBackend {
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
+        notesAboutUser: String?,
         earlierConversationSummary: String?,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
         userPrompt: String,
@@ -173,6 +197,7 @@ final class ClaudeCodeChatClient: CompanionChatBackend {
         let claudeArguments = currentClaudeArguments(systemPrompt: systemPrompt)
         let userMessageLine = try ClaudeCodeCLI.userMessageLine(
             images: images,
+            notesAboutUser: notesAboutUser,
             earlierConversationSummary: earlierConversationSummary,
             conversationHistory: conversationHistory,
             userPrompt: userPrompt

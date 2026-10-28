@@ -636,6 +636,49 @@ do {
     check(GuidedStepCardDeck.cardCorner(screenSize: screenSize, topInset: 37, cardSize: cardSize, margin: 16, avoiding: CGRect(x: 1180, y: 40, width: 320, height: 930)) == .topLeading, "a tall target on the right moves them to the left")
 }
 
+// MARK: Guided steps — a click said without a mark
+do {
+    let clickInstructionsWithoutTarget = [
+        "open system settings from the apple menu. [POINT:none]",
+        "Open System Settings from the Apple menu.",
+        "first click file, then export as pdf.",
+        "it's in the view menu, then pick show sidebar.",
+        "you’ll want to open the share menu in the top right.",
+        "start by selecting your project down here.",
+        "now hit share in the top right corner.",
+        "go to the privacy tab and turn it on. [DRAW:circle 10,10,40,40 label=\"privacy\"]",
+    ]
+    for answerText in clickInstructionsWithoutTarget {
+        check(GuidedStepAnswerCheck.isClickInstructionWithoutTarget(answerText), "a click with no mark is caught: \(answerText)")
+    }
+
+    let answersThatAreFine = [
+        "click file up in the menu bar. [DRAW:target 62,4,92,22 label=\"file\"]",
+        "now hit share in the top right corner. [DRAW:target 1160,36,1192,60 label=\"share\"]",
+        "html is the skeleton of every web page, it says what's on the page. [POINT:none]",
+        "press command comma to open settings.",
+        "type your email in the box and press return.",
+        "that's it, your pdf is saving.",
+        "it opens in a new window. [POINT:none]",
+        "the key is to cut the bass before you blend.",
+        "on it, i'll put a comparison together in the background. [AGENT:desks|research standing desks]",
+        "try a lower volume first.",
+        "openly, i'd pick the second one.",
+        "just hit command shift n while the finder window is active and it'll create a new folder right there. [POINT:none]",
+        "hit the return key to send it.",
+        "tap escape to close it.",
+        "boil the water first, then pick a sauce you like.",
+        "open up to them about how you feel.",
+        "choose whichever plan fits your budget.",
+        "they're in this downloads folder in the sidebar. [DRAW:circle 20,310,130,330 label=\"downloads\"]",
+    ]
+    for answerText in answersThatAreFine {
+        check(!GuidedStepAnswerCheck.isClickInstructionWithoutTarget(answerText), "not a click without a mark: \(answerText)")
+    }
+    check(GuidedStepAnswerCheck.answerHasTarget("now pick export. [DRAW: target 70,410,190,430 label=\"export\"]"), "a target with a space after the colon still counts")
+    check(GuidedStepAnswerCheck.missingTargetFollowUpTranscript.hasPrefix("(guided step)"), "the follow-up is saved as a guided step")
+}
+
 // MARK: Conversations — voice commands
 do {
     func parsed(_ transcript: String) -> ConversationVoiceCommand? { ConversationVoiceCommand.parse(transcript) }
@@ -767,6 +810,178 @@ do {
     let sessionPieces = sessionSegmenter.consume(accumulatedAnswerText: "okay, fresh start. [SESSION:new]", isAnswerComplete: true)
     let spokenSessionPieces = sessionPieces.compactMap { piece -> String? in if case .sentence(_, let text) = piece { return text } else { return nil } }
     check(spokenSessionPieces == ["okay, fresh start."], "the SESSION tag is never spoken: \(spokenSessionPieces)")
+}
+
+// MARK: Memory — fact text
+do {
+    check(UserMemoryText.cleanedFact("  + \"they use final cut pro\"  ") == "they use final cut pro", "list markers and quotes are trimmed")
+    check(UserMemoryText.cleanedFact("they [use] final\ncut pro") == "they use final cut pro", "brackets and line breaks go")
+    let longFact = UserMemoryText.cleanedFact(String(repeating: "they like long words ", count: 20))
+    check(longFact.count <= UserMemoryText.maximumFactLength && !longFact.hasSuffix(" "), "long facts are cut at a word")
+    check(UserMemoryText.isSameFact("they use Final Cut Pro.", "They use final cut pro"), "case and punctuation don't make a new fact")
+    check(UserMemoryText.isSameFact("they edit their videos in final cut pro", "they edit videos in final cut pro"), "small wording changes are the same fact")
+    check(!UserMemoryText.isSameFact("they use final cut pro", "they use premiere pro"), "a different app is a different fact")
+    check(UserMemoryText.forgetRequestsToApply(["everything"], answerAskedForNewConversation: true).isEmpty, "starting over never forgets everything, even if Claude says so")
+    check(UserMemoryText.forgetRequestsToApply(["they use imovie", "everything"], answerAskedForNewConversation: false) == ["they use imovie", "everything"], "without a start-over every forget request stands")
+    check(UserMemoryText.forgetRequestsToApply(["they use imovie"], answerAskedForNewConversation: true) == ["they use imovie"], "a named fact is still forgotten alongside a start-over")
+    check(UserMemoryText.isForgetEverythingRequest("Everything") && UserMemoryText.isForgetEverythingRequest("everything about me") && !UserMemoryText.isForgetEverythingRequest("everything in dropbox"), "\"everything\" means every fact, but only on its own")
+    check(UserMemoryText.factAddressedToUser("they keep their invoices in dropbox") == "You keep your invoices in dropbox", "facts are shown to the user as \"you\"")
+    check(UserMemoryText.factAddressedToUser("they're learning to beatmatch") == "You're learning to beatmatch", "contractions are turned too")
+    check(UserMemoryText.factAddressedToUser("they write documents and send them as pdfs") == "You write documents and send them as pdfs", "\"them\" about things is left alone")
+}
+
+// MARK: Memory — the store
+MainActor.assumeIsolated {
+    let memoryFileURL = FileManager.default.temporaryDirectory.appendingPathComponent("clicky-memory-tests-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: memoryFileURL) }
+    let memoryStore = UserMemoryStore(memoryFileURL: memoryFileURL)
+    check(memoryStore.facts.isEmpty && memoryStore.isMemoryEnabled, "memory starts empty and on")
+
+    let conversationID = UUID()
+    let firstRememberedAt = Date().addingTimeInterval(-600)
+    memoryStore.remember("they use final cut pro", origin: .learnedFromConversation, conversationID: conversationID, at: firstRememberedAt)
+    memoryStore.remember("they keep their invoices in dropbox", origin: .askedToRemember, conversationID: nil, at: firstRememberedAt.addingTimeInterval(60))
+    check(memoryStore.facts.map(\.text) == ["they keep their invoices in dropbox", "they use final cut pro"], "facts are kept newest first")
+    check(memoryStore.remember("   ", origin: .askedToRemember, conversationID: nil) == nil && memoryStore.facts.count == 2, "an empty fact isn't saved")
+
+    memoryStore.remember("They use Final Cut Pro.", origin: .askedToRemember, conversationID: nil, at: firstRememberedAt.addingTimeInterval(120))
+    check(memoryStore.facts.count == 2 && memoryStore.facts.first?.text == "They use Final Cut Pro.", "a repeated fact is freshened, not added twice")
+    check(memoryStore.facts.first?.origin == .learnedFromConversation && memoryStore.facts.first?.conversationID == conversationID, "a freshened fact keeps where it came from")
+
+    let reopenedMemoryStore = UserMemoryStore(memoryFileURL: memoryFileURL)
+    check(reopenedMemoryStore.facts.map(\.text) == memoryStore.facts.map(\.text), "facts come back after a restart")
+
+    check(memoryStore.forget(matching: "spreadsheets in excel").isEmpty && memoryStore.facts.count == 2, "forgetting something unknown removes nothing")
+    let forgottenFacts = memoryStore.forget(matching: "invoices in dropbox")
+    check(forgottenFacts.map(\.text) == ["they keep their invoices in dropbox"] && memoryStore.facts.count == 1, "forgetting by a few of its words removes that fact")
+    memoryStore.remember("they keep their invoices in dropbox", origin: .askedToRemember, conversationID: nil)
+    memoryStore.dropFacts(sameAs: "everything")
+    check(memoryStore.facts.count == 2, "an out-of-date note from Haiku never clears everything")
+    memoryStore.dropFacts(sameAs: "they use final cut pro")
+    check(memoryStore.facts.map(\.text) == ["they keep their invoices in dropbox"], "an out-of-date fact is dropped when it's the same fact")
+    memoryStore.remember("they use premiere pro", origin: .learnedFromConversation, conversationID: nil)
+    check(memoryStore.forget(matching: "everything").count == 2 && memoryStore.facts.isEmpty, "forget everything clears every fact")
+
+    for factNumber in 1...45 {
+        memoryStore.remember("they have hobby number \(factNumber) of many", origin: factNumber <= 3 ? .askedToRemember : .learnedFromConversation, conversationID: nil, at: Date().addingTimeInterval(Double(factNumber)))
+    }
+    check(memoryStore.facts.count == UserMemoryStore.maximumFactCount, "memory keeps at most \(UserMemoryStore.maximumFactCount) facts")
+    check(memoryStore.facts.filter { $0.origin == .askedToRemember }.count == 3, "facts the user asked for are kept over learned ones")
+
+    memoryStore.setMemoryEnabled(false)
+    check(!UserMemoryStore(memoryFileURL: memoryFileURL).isMemoryEnabled, "turning memory off is remembered too")
+    memoryStore.deleteFact(withID: memoryStore.facts[0].id)
+    check(memoryStore.facts.count == UserMemoryStore.maximumFactCount - 1, "a single fact can be deleted")
+    memoryStore.deleteAllFacts()
+    check(UserMemoryStore(memoryFileURL: memoryFileURL).facts.isEmpty, "deleting everything is saved")
+}
+
+// MARK: Memory — what Claude gets, and learning from conversations
+MainActor.assumeIsolated {
+    let olderFact = RememberedFact(id: UUID(), text: "they dj with mixxx", rememberedAt: Date().addingTimeInterval(-86_400), origin: .learnedFromConversation, conversationID: nil)
+    let newerFact = RememberedFact(id: UUID(), text: "they keep invoices in dropbox", rememberedAt: Date(), origin: .askedToRemember, conversationID: nil)
+    check(UserMemoryContext.noteForClaude(facts: [], isMemoryEnabled: true) == nil, "no facts, no note")
+    let memoryNote = UserMemoryContext.noteForClaude(facts: [newerFact, olderFact], isMemoryEnabled: true) ?? ""
+    check(memoryNote.contains("- they dj with mixxx\n- they keep invoices in dropbox"), "facts go to Claude oldest first: \(memoryNote)")
+    let memoryOffNote = UserMemoryContext.noteForClaude(facts: [newerFact], isMemoryEnabled: false) ?? ""
+    check(memoryOffNote.contains("memory is turned off") && !memoryOffNote.contains("dropbox"), "with memory off Claude is told so, and gets no facts")
+
+    let learningReply = UserMemoryContext.parseLearningReply("+ they edit videos in final cut pro\n- they use imovie\nsome stray line\n+ \"they post on youtube\"")
+    check(learningReply.factsToAdd == ["they edit videos in final cut pro", "they post on youtube"] && learningReply.factsToDrop == ["they use imovie"], "the learning reply's lines are read")
+    check(UserMemoryContext.parseLearningReply("none").factsToAdd.isEmpty, "\"none\" adds nothing")
+    let floodedReply = (1...9).map { "+ they like thing \($0)" }.joined(separator: "\n")
+    check(UserMemoryContext.parseLearningReply(floodedReply).factsToAdd.count == 5, "a reply can't add more than five facts at once")
+
+    let now = Date()
+    func conversation(minutesAgo: Double, exchangeCount: Int, reviewedExchangeCount: Int? = nil) -> ConversationSession {
+        let exchanges = (0..<exchangeCount).map { exchangeIndex in
+            ConversationExchange(id: UUID(), askedAt: now.addingTimeInterval(-minutesAgo * 60), userTranscript: "question \(exchangeIndex)", assistantResponse: "answer \(exchangeIndex) [POINT:none]", isGuidedStepFollowUp: false, frontmostAppName: "Pages")
+        }
+        var conversationSession = ConversationSession(id: UUID(), title: "Conversation", startedAt: now.addingTimeInterval(-minutesAgo * 60), lastActivityAt: now.addingTimeInterval(-minutesAgo * 60), exchanges: exchanges, earlierSummary: nil, summarizedExchangeCount: 0)
+        conversationSession.memoryReviewedExchangeCount = reviewedExchangeCount
+        return conversationSession
+    }
+    let currentActiveConversation = conversation(minutesAgo: 2, exchangeCount: 2)
+    let currentQuietConversation = conversation(minutesAgo: 45, exchangeCount: 2)
+    let finishedConversation = conversation(minutesAgo: 10, exchangeCount: 3)
+    let reviewedConversation = conversation(minutesAgo: 20, exchangeCount: 3, reviewedExchangeCount: 3)
+    let continuedAfterReviewConversation = conversation(minutesAgo: 25, exchangeCount: 4, reviewedExchangeCount: 3)
+    let oldConversation = conversation(minutesAgo: 60 * 24 * 5, exchangeCount: 3)
+    let emptyConversation = conversation(minutesAgo: 30, exchangeCount: 0)
+    let allConversations = [currentActiveConversation, finishedConversation, reviewedConversation, continuedAfterReviewConversation, oldConversation, emptyConversation]
+
+    let toLearnFrom = UserMemoryContext.conversationsToLearnFrom(in: allConversations, currentSessionID: currentActiveConversation.id, now: now, idleLimitSeconds: 1_800)
+    check(toLearnFrom.map(\.id) == [finishedConversation.id, continuedAfterReviewConversation.id], "only finished, recent conversations with something new are looked through, newest first")
+    let toLearnFromWhenQuiet = UserMemoryContext.conversationsToLearnFrom(in: [currentQuietConversation], currentSessionID: currentQuietConversation.id, now: now, idleLimitSeconds: 1_800)
+    check(toLearnFromWhenQuiet.count == 1, "the current conversation counts as over once it's been quiet past the idle limit")
+
+    var conversationWithGuidedStep = finishedConversation
+    conversationWithGuidedStep.exchanges.append(ConversationExchange(id: UUID(), askedAt: now, userTranscript: "(guided step) i clicked file. what's next?", assistantResponse: "now pick export. [DRAW:target 1,2,3,4 label=\"export\"]", isGuidedStepFollowUp: true, frontmostAppName: "Pages"))
+    let learningRequest = UserMemoryContext.learningRequest(conversationSession: conversationWithGuidedStep, knownFacts: [olderFact])
+    check(learningRequest.contains("- they dj with mixxx") && learningRequest.contains("they said (in Pages): question 0"), "the learning request has the known facts and the conversation")
+    check(!learningRequest.contains("(guided step)") && !learningRequest.contains("[POINT"), "guided-step turns and tags are left out of the learning request")
+
+    let markerFolder = FileManager.default.temporaryDirectory.appendingPathComponent("clicky-memory-marker-tests-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: markerFolder) }
+    let markerStore = ConversationSessionStore(conversationsDirectoryURL: markerFolder)
+    markerStore.recordExchange(ConversationExchange(id: UUID(), askedAt: now, userTranscript: "hi", assistantResponse: "hey", isGuidedStepFollowUp: false, frontmostAppName: nil))
+    let markedConversationID = markerStore.currentSessionID!
+    markerStore.markReviewedForMemory(sessionWithID: markedConversationID, exchangeCount: 1)
+    check(ConversationSessionStore(conversationsDirectoryURL: markerFolder).session(withID: markedConversationID)?.memoryReviewedExchangeCount == 1, "a conversation remembers it was looked through")
+}
+
+// MARK: Background agents — connected apps
+do {
+    let serverListOutput = """
+    Checking MCP server health…
+
+    claude.ai Gmail: https://gmailmcp.example.com/mcp - ✔ Connected
+    claude.ai Notion: https://mcp.notion.example.com/mcp - ! Needs authentication
+    claude.ai Fathom – Your Meeting Intelligence Layer: https://fathom.example.com/mcp - ! Needs authentication
+    claude.ai fleetforward-onboarding: https://ff.example.com/mcp - ✔ Connected
+    invoices: https://invoices.example.com/mcp (HTTP) - ✔ Connected
+    local-notes: node /Users/someone/notes-server.js --mode - fast - ✘ Failed to connect
+    """
+    let connectedApps = AgentConnectedApps.parseServerList(serverListOutput)
+    check(connectedApps.map(\.serverName) == ["claude.ai Gmail", "claude.ai Notion", "claude.ai Fathom – Your Meeting Intelligence Layer", "claude.ai fleetforward-onboarding", "invoices", "local-notes"], "every server line is read: \(connectedApps.map(\.serverName))")
+    check(connectedApps.map(\.connectionStatus) == [.connected, .needsSignIn, .needsSignIn, .connected, .connected, .failed], "connection status is read")
+    check(connectedApps[0].displayName == "Gmail" && connectedApps[4].displayName == "invoices", "claude.ai connectors are shown without the prefix")
+
+    check(AgentConnectedApps.toolPermissionRule(forServerName: "claude.ai Google Calendar") == "mcp__claude_ai_Google_Calendar", "connector names become Claude Code's tool prefix")
+    check(AgentConnectedApps.toolPermissionRule(forServerName: "claude.ai Fathom – Your Meeting Intelligence Layer") == "mcp__claude_ai_Fathom_Your_Meeting_Intelligence_Layer", "runs of odd characters become one underscore")
+    check(AgentConnectedApps.toolPermissionRule(forServerName: "claude.ai fleetforward-onboarding") == "mcp__claude_ai_fleetforward-onboarding", "hyphens stay")
+
+    let argumentsWithoutApps = BackgroundAgentJobRunner.claudeArguments()
+    check(argumentsWithoutApps.contains("--strict-mcp-config") && !argumentsWithoutApps.joined(separator: " ").contains("mcp__"), "with no apps turned on, MCP servers aren't loaded at all")
+    let argumentsWithApps = BackgroundAgentJobRunner.claudeArguments(connectedAppServerNames: ["claude.ai Gmail", "invoices"])
+    let allowedToolsArgument = argumentsWithApps[(argumentsWithApps.firstIndex(of: "--allowedTools") ?? 0) + 1]
+    check(!argumentsWithApps.contains("--strict-mcp-config"), "with apps turned on, Claude Code loads the user's servers")
+    check(allowedToolsArgument.hasSuffix("Edit(./**) mcp__claude_ai_Gmail mcp__invoices"), "only the turned-on apps are allowed: \(allowedToolsArgument)")
+    check(argumentsWithApps.contains("dontAsk"), "everything else is still refused without asking")
+    let instructionsArgument = argumentsWithApps[(argumentsWithApps.firstIndex(of: "--append-system-prompt") ?? 0) + 1]
+    check(instructionsArgument.contains("these apps of theirs: Gmail, invoices") && instructionsArgument.contains("Never send"), "the agent is told which apps it has and not to send")
+
+    check(BackgroundAgentJobRunner.describeToolUse(toolName: "mcp__claude_ai_Google_Calendar__list_events", toolInput: [:]) == "using Google Calendar: list events", "app tool use reads as a sentence")
+    check(AgentConnectedApps.noteForVoiceAnswers(appDisplayNames: []) == nil, "no apps, no note for the voice answers")
+    check(AgentConnectedApps.noteForVoiceAnswers(appDisplayNames: ["Gmail"])?.contains("Gmail") == true, "the voice answers hear which apps tasks can use")
+}
+
+// MARK: Memory — the REMEMBER and FORGET tags
+do {
+    check(StreamingAnswerSegmenter.isRememberTag("[REMEMBER:they use final cut pro]") && StreamingAnswerSegmenter.isClickyTag("[REMEMBER:they use final cut pro]"), "the REMEMBER tag is a Clicky tag")
+    check(StreamingAnswerSegmenter.isForgetTag("[FORGET:everything]") && StreamingAnswerSegmenter.isClickyTag("[FORGET:everything]"), "the FORGET tag is a Clicky tag")
+    check(StreamingAnswerSegmenter.tagContent("[REMEMBER: they keep invoices in dropbox ]") == "they keep invoices in dropbox", "a tag's content is read without the brackets")
+    var memorySegmenter = StreamingAnswerSegmenter()
+    let memoryPieces = memorySegmenter.consume(accumulatedAnswerText: "got it, i'll remember that. [REMEMBER:they keep invoices in dropbox]", isAnswerComplete: true)
+    let spokenMemoryPieces = memoryPieces.compactMap { piece -> String? in if case .sentence(_, let text) = piece { return text } else { return nil } }
+    check(spokenMemoryPieces == ["got it, i'll remember that."], "the REMEMBER tag is never spoken: \(spokenMemoryPieces)")
+    check(ConversationContext.spokenText(of: "done. [FORGET:they use imovie]") == "done.", "saved answers are shown without memory tags")
+    check(GuidedStepCardDeck.cardText(fromAnswerText: "got it. [REMEMBER:they use pages]") == "Got it.", "step cards leave memory tags out")
+
+    let messageWithMemory = (try? ClaudeCodeCLI.userMessageLine(images: [], notesAboutUser: "what you remember about them:\n- they use pages", conversationHistory: [], userPrompt: "hi")) ?? ""
+    let decodedMessage = (try? JSONSerialization.jsonObject(with: Data(messageWithMemory.utf8))) as? [String: Any]
+    let contentBlocks = ((decodedMessage?["message"] as? [String: Any])?["content"] as? [[String: Any]]) ?? []
+    check((contentBlocks.first?["text"] as? String)?.hasPrefix("what you remember about them") == true && (contentBlocks.last?["text"] as? String) == "hi", "the memory note goes first in the user message, the question last")
 }
 
 print("\(checkCount - failureCount)/\(checkCount) checks passed")

@@ -39,6 +39,17 @@ final class CompanionManager: ObservableObject {
     var conversationStore = ConversationSessionStore(
         conversationsDirectoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("gallery-conversations-\(UUID().uuidString)")
     )
+    var userMemoryStore = UserMemoryStore(
+        memoryFileURL: FileManager.default.temporaryDirectory.appendingPathComponent("gallery-memory-\(UUID().uuidString).json")
+    )
+    @Published var agentConnectedAppServerNames: [String] = []
+    @Published var availableConnectedApps: [ClaudeCodeConnectedApp]?
+    @Published var isLoadingConnectedApps = false
+    @Published var connectedAppsLoadingProblem: String?
+    func refreshConnectedApps() {}
+    func setAgentConnectedApp(serverName: String, isAllowed: Bool) {
+        agentConnectedAppServerNames = agentConnectedAppServerNames.filter { $0 != serverName } + (isAllowed ? [serverName] : [])
+    }
     func startNewConversation() { conversationStore.startNewSession() }
     func continueConversation(withID conversationID: UUID) { conversationStore.resumeSession(withID: conversationID) }
 

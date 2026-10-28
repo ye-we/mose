@@ -101,6 +101,7 @@ class ClaudeAPI {
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
+        notesAboutUser: String?,
         earlierConversationSummary: String?,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
@@ -112,6 +113,12 @@ class ClaudeAPI {
 
         // Build messages array
         var messages: [[String: Any]] = []
+
+        // What Clicky remembers about the user, and which apps background tasks may use
+        if let notesAboutUser {
+            messages.append(["role": "user", "content": "(\(notesAboutUser))"])
+            messages.append(["role": "assistant", "content": "got it."])
+        }
 
         // Exchanges too old to send word for word arrive as one summarized turn
         if let earlierConversationSummary {

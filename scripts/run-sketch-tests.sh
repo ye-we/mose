@@ -19,6 +19,8 @@ swiftc -O -o "$test_binary_path" \
   "$repository_root/leanring-buddy/BackgroundAgentJobRunner.swift" \
   "$repository_root/leanring-buddy/GuidedStepCardDeck.swift" \
   "$repository_root/leanring-buddy/ConversationSessions.swift" \
+  "$repository_root/leanring-buddy/UserMemory.swift" \
+  "$repository_root/leanring-buddy/AgentConnectedApps.swift" \
   "$repository_root/scripts/sketch-tests/main.swift"
 
 "$test_binary_path"

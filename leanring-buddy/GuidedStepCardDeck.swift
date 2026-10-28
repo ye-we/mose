@@ -95,7 +95,7 @@ struct GuidedStepCardDeck: Equatable {
     /// What goes on a card: the spoken answer without its tags, as a sentence,
     /// cut at a word boundary if it's long.
     static func cardText(fromAnswerText answerText: String) -> String {
-        let tagFreeText = answerText.replacingOccurrences(of: #"\[(POINT|DRAW|AGENT|SESSION):[^\]]*\]"#, with: " ", options: .regularExpression)
+        let tagFreeText = answerText.replacingOccurrences(of: #"\[(POINT|DRAW|AGENT|SESSION|REMEMBER|FORGET):[^\]]*\]"#, with: " ", options: .regularExpression)
         let singleSpacedText = tagFreeText
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
@@ -150,5 +150,102 @@ struct GuidedStepCardDeck: Equatable {
         case .topLeading: return CGRect(x: leadingX, y: topY, width: cardSize.width, height: cardSize.height)
         case .bottomLeading: return CGRect(x: leadingX, y: bottomY, width: cardSize.width, height: cardSize.height)
         }
+    }
+}
+
+// MARK: - Answers that skip the mark
+
+/// Catches an answer that tells the user what to click but marks nothing,
+/// like "open system settings from the apple menu": two clicks in one
+/// sentence, the second one not on screen yet. Without a target the
+/// walkthrough would stop there, so Clicky asks Claude once more for a mark
+/// on the first click.
+enum GuidedStepAnswerCheck {
+    /// Sent back to Claude after such an answer. An answer of only [POINT:none]
+    /// isn't spoken, so when there's nothing to mark the user hears nothing more.
+    static let missingTargetFollowUpTranscript = "(guided step) you told me what to click but didn't mark it. mark only the very next click with a target and say it in a few words. if that click isn't on screen right now, or it's a keyboard shortcut, write no words at all: your whole reply is [POINT:none]."
+
+    /// Words that can come before the instruction itself ("first, click…",
+    /// "now you'll want to open…", "start by opening…").
+    private static let leadingWordsBeforeAnInstruction = [
+        "first", "now", "then", "next", "so", "okay", "ok", "alright", "and", "just",
+        "you'll want to", "you will want to", "you need to", "you'll need to", "you have to",
+        "start by", "begin by", "try",
+    ]
+
+    /// Openings that always mean a click, after any leading words.
+    private static let clickOpenings = [
+        "click", "double-click", "double click", "right-click", "right click", "tap",
+        "clicking", "double-clicking", "right-clicking", "tapping",
+    ]
+
+    /// Openings that mean a click only when the clause names a place on
+    /// screen: "pick show sidebar" is a step, "pick a sauce" is advice.
+    private static let clickOpeningsThatNeedAScreenPlace = [
+        "select", "choose", "pick", "open", "hit", "go to", "go into", "head to",
+        "head over to", "navigate to",
+        "selecting", "choosing", "picking", "opening", "hitting", "going to", "heading to",
+    ]
+
+    private static let screenPlaceWords = [
+        "menu", "button", "tab", "settings", "preferences", "icon", "bar", "sidebar", "toolbar",
+        "panel", "pane", "window", "option", "link", "field", "box", "list", "item", "dropdown",
+        "checkbox", "toggle", "switch", "dock", "file", "folder", "top", "bottom", "left",
+        "right", "corner", "here", "there", "screen", "apple",
+    ]
+
+    /// Words that make "hit …" or "tap …" a key press, not a click.
+    private static let keyboardWords = [
+        "command", "cmd", "shift", "ctrl", "escape", "esc", "return", "enter",
+        "spacebar", "space bar", "key", "keys", "shortcut", "keyboard",
+    ]
+
+    static func answerHasTarget(_ answerText: String) -> Bool {
+        answerText.range(of: #"\[\s*DRAW\s*:\s*target\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// True when the answer has no target and one of its sentences or clauses
+    /// is an instruction to click something. Keyboard steps ("press command
+    /// comma") and typing don't count: those are said without a target.
+    static func isClickInstructionWithoutTarget(_ answerText: String) -> Bool {
+        guard !answerHasTarget(answerText) else { return false }
+        let spokenText = answerText
+            .replacingOccurrences(of: #"\[[^\]]*\]"#, with: " ", options: .regularExpression)
+            .lowercased()
+            .replacingOccurrences(of: "’", with: "'")
+        let clauses = spokenText
+            .replacingOccurrences(of: #"\bthen\b"#, with: ",", options: .regularExpression)
+            .components(separatedBy: CharacterSet(charactersIn: ".!?;:,\n"))
+        return clauses.contains { clause in
+            isClickInstruction(clause.trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    private static func isClickInstruction(_ clause: String) -> Bool {
+        var remainingClause = clause
+        var didRemoveLeadingWords = true
+        while didRemoveLeadingWords {
+            didRemoveLeadingWords = false
+            for leadingWords in leadingWordsBeforeAnInstruction where startsWithWords(remainingClause, leadingWords) {
+                remainingClause = String(remainingClause.dropFirst(leadingWords.count)).trimmingCharacters(in: .whitespaces)
+                didRemoveLeadingWords = true
+            }
+        }
+        let clauseWords = " " + remainingClause.replacingOccurrences(of: #"[^a-z ]"#, with: " ", options: .regularExpression) + " "
+        let isAboutTheKeyboard = keyboardWords.contains { clauseWords.contains(" \($0) ") }
+        guard !isAboutTheKeyboard else { return false }
+        if clickOpenings.contains(where: { startsWithWords(remainingClause, $0) }) {
+            return true
+        }
+        guard clickOpeningsThatNeedAScreenPlace.contains(where: { startsWithWords(remainingClause, $0) }) else { return false }
+        return screenPlaceWords.contains { clauseWords.contains(" \($0) ") }
+    }
+
+    /// Whether the text starts with these whole words ("open" matches "open
+    /// the menu" but not "opens" or "openly").
+    private static func startsWithWords(_ text: String, _ words: String) -> Bool {
+        guard text.hasPrefix(words) else { return false }
+        guard let characterAfterWords = text.dropFirst(words.count).first else { return true }
+        return !(characterAfterWords.isLetter || characterAfterWords == "-" || characterAfterWords == "'")
     }
 }

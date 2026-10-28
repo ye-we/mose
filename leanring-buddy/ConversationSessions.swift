@@ -47,6 +47,10 @@ struct ConversationSession: Codable, Equatable, Identifiable {
     /// Claude once the conversation is too long to send whole.
     var earlierSummary: String?
     var summarizedExchangeCount: Int
+    /// How many exchanges had been said when it was last looked through for
+    /// lasting facts to remember (UserMemory). Nil until then, and in
+    /// conversations saved before memory existed.
+    var memoryReviewedExchangeCount: Int? = nil
 
     /// Exchanges the user started, without Clicky's own guided-step turns.
     var questionCount: Int { exchanges.filter { !$0.isGuidedStepFollowUp }.count }
@@ -147,6 +151,12 @@ final class ConversationSessionStore: ObservableObject {
         summarizedSession.earlierSummary = summary
         summarizedSession.summarizedExchangeCount = summarizedExchangeCount
         saveAndPublish(summarizedSession)
+    }
+
+    func markReviewedForMemory(sessionWithID sessionID: UUID, exchangeCount: Int) {
+        guard var reviewedSession = session(withID: sessionID) else { return }
+        reviewedSession.memoryReviewedExchangeCount = exchangeCount
+        saveAndPublish(reviewedSession)
     }
 
     func renameSession(withID sessionID: UUID, to newTitle: String) {
@@ -287,10 +297,10 @@ enum ConversationContext {
         return "\(previousSummaryText)fold these later exchanges into the summary and reply with only the new summary:\n\(foldedTranscript)"
     }
 
-    /// An answer without its POINT, DRAW, AGENT and SESSION tags.
+    /// An answer without its POINT, DRAW, AGENT, SESSION, REMEMBER and FORGET tags.
     static func spokenText(of assistantResponse: String) -> String {
         assistantResponse
-            .replacingOccurrences(of: #"\[(POINT|DRAW|AGENT|SESSION):[^\]]*\]"#, with: " ", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: #"\[(POINT|DRAW|AGENT|SESSION|REMEMBER|FORGET):[^\]]*\]"#, with: " ", options: [.regularExpression, .caseInsensitive])
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .replacingOccurrences(of: " .", with: ".")

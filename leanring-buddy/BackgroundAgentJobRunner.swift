@@ -14,7 +14,9 @@
 //    - Write and Edit only inside the job folder;
 //    - search the web and read pages;
 //    - read files, except credentials (SSH, cloud keys, keychains, .env);
-//    - anything else (MCP servers, other tools) is refused without asking.
+//    - use the connected apps the user turned on for background tasks
+//      (AgentConnectedApps), and no others;
+//    - anything else (other MCP servers, other tools) is refused without asking.
 //
 
 import Foundation
@@ -69,6 +71,10 @@ final class BackgroundAgentJobRunner: BackgroundAgentJobService {
     Your final message is shown to them and its first sentence is read aloud. Lead with the result in plain words (what you made or found, and that it's in the output folder), then only what helps. No filler.
     """
 
+    /// The connected apps (MCP server names) the user lets background tasks
+    /// use. Set by CompanionManager from the Connected Apps window.
+    var connectedAppServerNames: [String] = []
+
     private var jobRecordsByID: [String: BackgroundAgentJobRecord] = [:]
     private var runningProcessesByJobID: [String: Process] = [:]
 
@@ -76,19 +82,34 @@ final class BackgroundAgentJobRunner: BackgroundAgentJobService {
         loadSavedJobs()
     }
 
-    nonisolated static func claudeArguments() -> [String] {
-        [
+    /// With no connected apps, MCP servers aren't even loaded. With some,
+    /// Claude Code loads the user's servers as usual, and only the turned-on
+    /// ones are allowed; tools of the rest are refused without asking.
+    nonisolated static func claudeArguments(connectedAppServerNames: [String] = []) -> [String] {
+        var allowedToolRules = allowedTools
+        var instructions = agentInstructions
+        if !connectedAppServerNames.isEmpty {
+            let connectedAppRules = connectedAppServerNames.map(AgentConnectedApps.toolPermissionRule(forServerName:))
+            allowedToolRules += " " + connectedAppRules.joined(separator: " ")
+            instructions += AgentConnectedApps.agentInstructions(
+                forAppDisplayNames: connectedAppServerNames.map(AgentConnectedApps.displayName(forServerName:))
+            )
+        }
+        var arguments = [
             "-p",
             "--output-format", "stream-json",
             "--verbose",
             "--model", agentModelAlias,
-            "--append-system-prompt", agentInstructions,
+            "--append-system-prompt", instructions,
             "--permission-mode", "dontAsk",
-            "--allowedTools", allowedTools,
+            "--allowedTools", allowedToolRules,
             "--disallowedTools", disallowedTools,
             "--settings", sandboxSettingsJSON,
-            "--strict-mcp-config",
         ]
+        if connectedAppServerNames.isEmpty {
+            arguments.append("--strict-mcp-config")
+        }
+        return arguments
     }
 
     // MARK: - BackgroundAgentJobService
@@ -135,7 +156,10 @@ final class BackgroundAgentJobRunner: BackgroundAgentJobService {
 
         let agentProcess = Process()
         agentProcess.executableURL = foundInstallation.binaryURL
-        agentProcess.arguments = Self.claudeArguments()
+        agentProcess.arguments = Self.claudeArguments(connectedAppServerNames: connectedAppServerNames)
+        if !connectedAppServerNames.isEmpty {
+            print("🤖 Background agent \(jobID) may use: \(connectedAppServerNames.joined(separator: ", "))")
+        }
         agentProcess.environment = foundInstallation.processEnvironment
         agentProcess.currentDirectoryURL = jobFolderURL
         let standardInputPipe = Pipe()
@@ -348,6 +372,15 @@ final class BackgroundAgentJobRunner: BackgroundAgentJobService {
         case "Glob", "Grep":
             return "looking through files"
         default:
+            // "mcp__claude_ai_Gmail__search_threads" → "using Gmail: search threads"
+            if toolName.hasPrefix("mcp__") {
+                let toolNameParts = toolName.dropFirst("mcp__".count).components(separatedBy: "__")
+                let appName = (toolNameParts.first ?? "")
+                    .replacingOccurrences(of: "claude_ai_", with: "")
+                    .replacingOccurrences(of: "_", with: " ")
+                let actionName = toolNameParts.dropFirst().joined(separator: " ").replacingOccurrences(of: "_", with: " ")
+                return actionName.isEmpty ? "using \(appName)" : "using \(appName): \(actionName)"
+            }
             return "using \(toolName)"
         }
     }

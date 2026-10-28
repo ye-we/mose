@@ -5,6 +5,8 @@
 //  The History window: every saved conversation, newest first and grouped by
 //  day, with search. Picking one shows what was said, what Clicky remembers
 //  from its start when it's long, and lets the user continue it or delete it.
+//  The Memory page at the top lists what Clicky remembers about the user
+//  across conversations, where each fact came from, and turns memory off.
 //  Also the panel's small "current conversation" row.
 //
 
@@ -37,6 +39,7 @@ final class ConversationHistoryWindowController: NSObject, NSWindowDelegate {
     private func makeHistoryWindow() -> NSWindow {
         let historyView = ConversationHistoryView(
             conversationStore: companionManager.conversationStore,
+            userMemoryStore: companionManager.userMemoryStore,
             onContinue: { [weak companionManager] conversationID in
                 companionManager?.continueConversation(withID: conversationID)
             },
@@ -69,12 +72,16 @@ final class ConversationHistoryWindowController: NSObject, NSWindowDelegate {
 
 struct ConversationHistoryView: View {
     @ObservedObject var conversationStore: ConversationSessionStore
+    @ObservedObject var userMemoryStore: UserMemoryStore
     let onContinue: (UUID) -> Void
     let onStartNew: () -> Void
 
     @State private var searchText = ""
     @State private var selectedConversationID: UUID?
     @State private var isConfirmingDeleteAll = false
+    @State var isShowingMemory = false
+    @State private var isConfirmingForgetEverything = false
+    @State private var hoveredFactID: UUID?
 
     private var shownConversations: [ConversationSession] {
         ConversationSearch.sessions(conversationStore.sessions, matching: searchText)
@@ -107,6 +114,14 @@ struct ConversationHistoryView: View {
         } message: {
             Text("They're removed from this Mac and can't be brought back.")
         }
+        .alert("Forget everything \(AppIdentity.displayName) remembers about you?", isPresented: $isConfirmingForgetEverything) {
+            Button("Forget Everything", role: .destructive) {
+                userMemoryStore.deleteAllFacts()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your conversations stay. Only what it learned about you is removed.")
+        }
     }
 
     // MARK: List
@@ -133,6 +148,10 @@ struct ConversationHistoryView: View {
             .padding(.horizontal, 16)
             .padding(.top, 40)
             .padding(.bottom, 12)
+
+            memoryRow
+                .padding(.horizontal, 6)
+                .padding(.bottom, 8)
 
             searchField
                 .padding(.horizontal, 12)
@@ -205,9 +224,12 @@ struct ConversationHistoryView: View {
     }
 
     private func conversationRow(_ conversationSession: ConversationSession) -> some View {
-        let isSelected = conversationSession.id == selectedConversation?.id
+        let isSelected = !isShowingMemory && conversationSession.id == selectedConversation?.id
         let isCurrent = conversationSession.id == conversationStore.currentSessionID
-        return Button(action: { selectedConversationID = conversationSession.id }) {
+        return Button(action: {
+            selectedConversationID = conversationSession.id
+            isShowingMemory = false
+        }) {
             HStack(alignment: .top, spacing: 8) {
                 Circle()
                     .fill(isCurrent ? DS.Colors.companionBlue : Color.clear)
@@ -237,6 +259,46 @@ struct ConversationHistoryView: View {
         .pointerCursor()
     }
 
+    /// Opens the Memory page.
+    private var memoryRow: some View {
+        Button(action: { isShowingMemory = true }) {
+            HStack(spacing: 10) {
+                Image(systemName: "brain")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(userMemoryStore.isMemoryEnabled ? DS.Colors.companionBlue : DS.Colors.textTertiary)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Memory")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textPrimary)
+                    Text(memoryRowCaption)
+                        .font(.system(size: 11.5))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(isShowingMemory ? 0.09 : 0.03))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    private var memoryRowCaption: String {
+        guard userMemoryStore.isMemoryEnabled else { return "Off" }
+        switch userMemoryStore.facts.count {
+        case 0: return "Nothing yet"
+        case 1: return "1 thing about you"
+        default: return "\(userMemoryStore.facts.count) things about you"
+        }
+    }
+
     private func rowCaption(for conversationSession: ConversationSession, isCurrent: Bool) -> String {
         let timeText = Self.timeFormatter.string(from: conversationSession.lastActivityAt)
         let questionText = conversationSession.questionCount == 1 ? "1 question" : "\(conversationSession.questionCount) questions"
@@ -260,7 +322,9 @@ struct ConversationHistoryView: View {
 
     @ViewBuilder
     private var conversationDetail: some View {
-        if let selectedConversation {
+        if isShowingMemory {
+            memoryDetail
+        } else if let selectedConversation {
             VStack(alignment: .leading, spacing: 0) {
                 detailHeader(selectedConversation)
                     .padding(.horizontal, 28)
@@ -319,6 +383,130 @@ struct ConversationHistoryView: View {
                 selectedConversationID = nil
             }
             .buttonStyle(CompanionQuietButtonStyle())
+        }
+    }
+
+    // MARK: Memory
+
+    private var memoryDetail: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("What \(AppIdentity.displayName) remembers about you")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundColor(DS.Colors.textPrimary)
+                    Text("Things that carry over from one conversation to the next. They're kept on this Mac and sent to Claude with each question.")
+                        .font(.system(size: 12))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Toggle("Memory", isOn: Binding(
+                    get: { userMemoryStore.isMemoryEnabled },
+                    set: { userMemoryStore.setMemoryEnabled($0) }
+                ))
+                .toggleStyle(CompanionSwitchToggleStyle())
+                .labelsHidden()
+                .padding(.top, 6)
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 40)
+            .padding(.bottom, 16)
+            Rectangle().fill(DS.Colors.hairline).frame(height: 1)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if !userMemoryStore.isMemoryEnabled {
+                        memoryNote("Memory is off. \(AppIdentity.displayName) doesn't learn anything new or use what's below until you turn it back on.")
+                    }
+                    if userMemoryStore.facts.isEmpty {
+                        memoryNote("Nothing yet. Say \u{201C}remember that\u{2026}\u{201D}, or just talk: when a conversation ends, \(AppIdentity.displayName) keeps anything lasting, like the apps you use or what you're working on.")
+                    } else {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(userMemoryStore.facts) { rememberedFact in
+                                factRow(rememberedFact)
+                            }
+                        }
+                        Button("Forget everything\u{2026}") { isConfirmingForgetEverything = true }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11.5))
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .pointerCursor()
+                            .padding(.top, 6)
+                    }
+                }
+                .padding(.horizontal, 28)
+                .padding(.vertical, 20)
+                .frame(maxWidth: 640, alignment: .leading)
+            }
+            .opacity(userMemoryStore.isMemoryEnabled ? 1 : 0.6)
+        }
+    }
+
+    private func memoryNote(_ noteText: String) -> some View {
+        Text(noteText)
+            .font(.system(size: 12.5))
+            .foregroundColor(DS.Colors.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(0.04))
+            )
+    }
+
+    private func factRow(_ rememberedFact: RememberedFact) -> some View {
+        let isHovered = hoveredFactID == rememberedFact.id
+        return HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(UserMemoryText.factAddressedToUser(rememberedFact.text))
+                    .font(.system(size: 13.5))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(factCaption(rememberedFact))
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button(action: { userMemoryStore.deleteFact(withID: rememberedFact.id) }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(isHovered ? DS.Colors.textSecondary : DS.Colors.textTertiary.opacity(0.6))
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.white.opacity(isHovered ? 0.08 : 0)))
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .help("Forget this")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(isHovered ? 0.05 : 0))
+        )
+        .onHover { isHovering in
+            hoveredFactID = isHovering ? rememberedFact.id : (hoveredFactID == rememberedFact.id ? nil : hoveredFactID)
+        }
+    }
+
+    /// "You asked, today" or "From “Export my project”, Tuesday Oct 27".
+    private func factCaption(_ rememberedFact: RememberedFact) -> String {
+        let rememberedAt = rememberedFact.rememberedAt
+        let isRecentDay = Calendar.current.isDateInToday(rememberedAt) || Calendar.current.isDateInYesterday(rememberedAt)
+        let dayText = isRecentDay ? Self.dayTitle(for: rememberedAt).lowercased() : Self.dayTitle(for: rememberedAt)
+        switch rememberedFact.origin {
+        case .askedToRemember:
+            return "You asked, \(dayText)"
+        case .learnedFromConversation:
+            if let conversationID = rememberedFact.conversationID,
+               let sourceConversation = conversationStore.session(withID: conversationID) {
+                return "From \u{201C}\(sourceConversation.title)\u{201D}, \(dayText)"
+            }
+            return "From a conversation, \(dayText)"
         }
     }
 
@@ -421,11 +609,15 @@ struct ConversationHistoryView: View {
 
     /// "(guided step) i clicked export. what's next?" → "You clicked export"
     static func guidedStepDescription(of followUpTranscript: String) -> String {
-        if let clickedRange = followUpTranscript.range(of: #"i clicked (somewhere else instead of )?(.+?)\. what"#, options: .regularExpression) {
+        if followUpTranscript == GuidedStepAnswerCheck.missingTargetFollowUpTranscript {
+            return "\(AppIdentity.displayName) marked where to click"
+        }
+        if let clickedRange = followUpTranscript.range(of: #"i (right-)?clicked (somewhere else instead of )?(.+?)\. what"#, options: .regularExpression) {
             let clickedText = String(followUpTranscript[clickedRange])
-                .replacingOccurrences(of: "i clicked ", with: "")
+                .replacingOccurrences(of: #"^i (right-)?clicked "#, with: "", options: .regularExpression)
                 .replacingOccurrences(of: ". what", with: "")
-            return "You clicked \(clickedText)"
+            let clickedWords = followUpTranscript.contains("i right-clicked") ? "right-clicked" : "clicked"
+            return "You \(clickedWords) \(clickedText)"
         }
         return "You clicked the next step"
     }

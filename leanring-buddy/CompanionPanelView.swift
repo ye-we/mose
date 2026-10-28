@@ -289,6 +289,14 @@ struct CompanionPanelView: View {
                 )
             }
 
+            settingsRow(title: "Apps for background tasks", caption: connectedAppsCaption) {
+                Button("Choose") {
+                    NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+                    NotificationCenter.default.post(name: .clickyOpenConnectedApps, object: nil)
+                }
+                .buttonStyle(CompanionQuietButtonStyle())
+            }
+
             settingsRow(title: "Open at login", caption: nil) {
                 settingsToggle(
                     isOn: companionManager.isOpenAtLoginEnabled,
@@ -296,6 +304,12 @@ struct CompanionPanelView: View {
                 )
             }
         }
+    }
+
+    /// "None", or the apps background tasks may use ("Gmail, Google Drive").
+    private var connectedAppsCaption: String {
+        let allowedAppNames = companionManager.agentConnectedAppServerNames.map(AgentConnectedApps.displayName(forServerName:))
+        return allowedAppNames.isEmpty ? "None, only the web and files" : allowedAppNames.joined(separator: ", ")
     }
 
     /// The stored model id, matched to the family shown in the picker.

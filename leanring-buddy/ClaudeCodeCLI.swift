@@ -226,15 +226,22 @@ enum ClaudeCodeCLI {
     }
 
     /// The one line `claude -p --input-format stream-json` reads for a turn.
-    /// It takes a single user message, so earlier exchanges are folded into a
-    /// short text transcript at the start, and this turn keeps its images.
+    /// It takes a single user message, so notes about the user (what Clicky
+    /// remembers, which apps background tasks may use) and earlier exchanges
+    /// (as a short text transcript) go at the start, and this turn keeps its
+    /// images.
     static func userMessageLine(
         images: [(data: Data, label: String)],
+        notesAboutUser: String? = nil,
         earlierConversationSummary: String? = nil,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
         userPrompt: String
     ) throws -> String {
         var contentBlocks: [[String: Any]] = []
+
+        if let notesAboutUser {
+            contentBlocks.append(["type": "text", "text": notesAboutUser])
+        }
 
         if earlierConversationSummary != nil || !conversationHistory.isEmpty {
             var earlierConversationParts: [String] = []

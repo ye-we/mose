@@ -100,7 +100,34 @@ MainActor.assumeIsolated {
     conversationStore.recordExchange(exchange("(guided step) i clicked file. what's next?", "now pick export as pdf near the bottom of the menu. [DRAW:target 70,410,190,430 label=\"export as pdf\"]", minutesAgo: 8, app: "Pages", guided: true))
     conversationStore.recordExchange(exchange("(guided step) i clicked export as pdf. what's next?", "done, it's saving to your downloads folder.", minutesAgo: 8, app: "Pages", guided: true))
     render(CompanionPanelView(companionManager: conversationsManager).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-conversation")
-    render(ConversationHistoryView(conversationStore: conversationStore, onContinue: { _ in }, onStartNew: {}), size: NSSize(width: 860, height: 580), name: "history-window")
+    render(ConversationHistoryView(conversationStore: conversationStore, userMemoryStore: conversationsManager.userMemoryStore, onContinue: { _ in }, onStartNew: {}), size: NSSize(width: 860, height: 580), name: "history-window")
+
+    // Memory: empty, with facts, and turned off
+    let userMemoryStore = conversationsManager.userMemoryStore
+    render(ConversationHistoryView(conversationStore: conversationStore, userMemoryStore: userMemoryStore, onContinue: { _ in }, onStartNew: {}, isShowingMemory: true), size: NSSize(width: 860, height: 580), name: "history-memory-empty")
+    let djConversationID = conversationStore.sessions.last?.id
+    userMemoryStore.remember("they dj with mixxx on a controller", origin: .learnedFromConversation, conversationID: djConversationID, at: Date().addingTimeInterval(-60 * 60 * 26))
+    userMemoryStore.remember("they're learning to beatmatch by ear", origin: .learnedFromConversation, conversationID: djConversationID, at: Date().addingTimeInterval(-60 * 60 * 26))
+    userMemoryStore.remember("they keep their invoices in dropbox", origin: .askedToRemember, conversationID: nil, at: Date().addingTimeInterval(-60 * 20))
+    userMemoryStore.remember("they write their documents in pages and send them as pdfs", origin: .learnedFromConversation, conversationID: conversationStore.currentSessionID, at: Date().addingTimeInterval(-60 * 5))
+    render(ConversationHistoryView(conversationStore: conversationStore, userMemoryStore: userMemoryStore, onContinue: { _ in }, onStartNew: {}, isShowingMemory: true), size: NSSize(width: 860, height: 580), name: "history-memory")
+    userMemoryStore.setMemoryEnabled(false)
+    render(ConversationHistoryView(conversationStore: conversationStore, userMemoryStore: userMemoryStore, onContinue: { _ in }, onStartNew: {}, isShowingMemory: true), size: NSSize(width: 860, height: 580), name: "history-memory-off")
+
+    // Apps for background tasks: still loading, and a list with two turned on
+    let connectedAppsManager = manager { $0.claudeCodeSetupState = .ready(account) }
+    render(ConnectedAppsView(companionManager: connectedAppsManager), size: NSSize(width: 520, height: 600), name: "connected-apps-loading")
+    connectedAppsManager.availableConnectedApps = AgentConnectedApps.parseServerList("""
+    claude.ai Gmail: https://example.com/gmail - ✔ Connected
+    claude.ai Google Calendar: https://example.com/calendar - ✔ Connected
+    claude.ai Google Drive: https://example.com/drive - ✔ Connected
+    claude.ai Notion: https://example.com/notion - ! Needs authentication
+    claude.ai Slack: https://example.com/slack - ! Needs authentication
+    invoices: https://example.com/invoices (HTTP) - ✔ Connected
+    """)
+    connectedAppsManager.agentConnectedAppServerNames = ["claude.ai Google Calendar", "claude.ai Google Drive"]
+    render(ConnectedAppsView(companionManager: connectedAppsManager), size: NSSize(width: 520, height: 600), name: "connected-apps")
+    render(CompanionPanelView(companionManager: connectedAppsManager).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-with-connected-apps")
 
     let panelProblem = manager { $0.claudeCodeSetupState = .notSignedIn; $0.hasCompletedOnboarding = true }
     render(CompanionPanelView(companionManager: panelProblem).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-signed-out")
