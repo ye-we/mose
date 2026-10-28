@@ -230,18 +230,28 @@ enum ClaudeCodeCLI {
     /// short text transcript at the start, and this turn keeps its images.
     static func userMessageLine(
         images: [(data: Data, label: String)],
+        earlierConversationSummary: String? = nil,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
         userPrompt: String
     ) throws -> String {
         var contentBlocks: [[String: Any]] = []
 
-        if !conversationHistory.isEmpty {
-            let earlierConversationTranscript = conversationHistory
-                .map { exchange in "user: \(exchange.userPlaceholder)\nyou: \(exchange.assistantResponse)" }
-                .joined(separator: "\n")
+        if earlierConversationSummary != nil || !conversationHistory.isEmpty {
+            var earlierConversationParts: [String] = []
+            if let earlierConversationSummary {
+                earlierConversationParts.append("how this conversation started, in short: \(earlierConversationSummary)")
+            }
+            if !conversationHistory.isEmpty {
+                let earlierConversationTranscript = conversationHistory
+                    .map { exchange in "user: \(exchange.userPlaceholder)\nyou: \(exchange.assistantResponse)" }
+                    .joined(separator: "\n")
+                earlierConversationParts.append(earlierConversationSummary == nil
+                    ? earlierConversationTranscript
+                    : "the most recent exchanges:\n\(earlierConversationTranscript)")
+            }
             contentBlocks.append([
                 "type": "text",
-                "text": "earlier in this conversation (for context only, don't repeat it):\n\(earlierConversationTranscript)",
+                "text": "earlier in this conversation (for context only, don't repeat it):\n\(earlierConversationParts.joined(separator: "\n\n"))",
             ])
         }
 

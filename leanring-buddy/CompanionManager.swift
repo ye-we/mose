@@ -195,9 +195,24 @@ final class CompanionManager: ObservableObject {
         (chatBackend as? ClaudeCodeChatClient)?.isExtendedThinkingEnabled = isEnabled
     }
 
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
-    private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+    // MARK: - Conversations
+
+    /// Every conversation, saved on this Mac, and which one is current.
+    let conversationStore = ConversationSessionStore()
+    /// After this long without talking, the next question starts a new conversation.
+    static let conversationIdleLimitSeconds: TimeInterval = 30 * 60
+    /// Writes the short summaries of long conversations. Haiku, and no process
+    /// is kept waiting for it, since summaries are occasional.
+    private lazy var conversationSummaryBackend: CompanionChatBackend = {
+        if let externalBridgeBaseURL = Self.externalBridgeBaseURL {
+            return ClaudeAPI(proxyURL: "\(externalBridgeBaseURL)/chat", model: "claude-haiku-4-5")
+        }
+        return ClaudeCodeChatClient(model: "claude-haiku-4-5", isExtendedThinkingEnabled: false, keepsProcessWaitingForNextRequest: false)
+    }()
+    private var conversationIDsBeingSummarized: Set<UUID> = []
+    /// Claude answered with [SESSION:new]: the user asked to start over in
+    /// their own words, so this exchange begins nothing and the next is fresh.
+    private var answerAskedForNewConversation = false
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -363,6 +378,11 @@ final class CompanionManager: ObservableObject {
             Task { await useBridgeVoiceIfConfigured() }
         }
         Task { await loadBackgroundAgentJobsAtLaunch() }
+        // A quick restart picks the conversation back up
+        if let mostRecentConversation = conversationStore.sessions.first,
+           Date().timeIntervalSince(mostRecentConversation.lastActivityAt) < Self.conversationIdleLimitSeconds {
+            conversationStore.resumeSession(withID: mostRecentConversation.id)
+        }
         #if DEBUG
         installDebugAutomationObserversIfEnabled()
         #endif
@@ -561,6 +581,7 @@ final class CompanionManager: ObservableObject {
         answerSegmenter = StreamingAnswerSegmenter()
         latestAccumulatedAnswerText = ""
         stepCardWaitingForItsTarget = nil
+        answerAskedForNewConversation = false
         answerScreenCaptures = screenCaptures
         answerScreenCaptureDate = screenCaptureDate
         answerScreenTextRecognitionTask = screenTextRecognitionTask
@@ -599,6 +620,8 @@ final class CompanionManager: ObservableObject {
             case .tag(let tagText, let sentenceIndex):
                 if StreamingAnswerSegmenter.isAgentTag(tagText) {
                     startBackgroundAgentJob(fromAgentTag: tagText)
+                } else if StreamingAnswerSegmenter.isSessionTag(tagText) {
+                    answerAskedForNewConversation = true
                 } else {
                     resolveVisualTagInOrder(tagText, sentenceIndex: sentenceIndex)
                 }
@@ -1281,7 +1304,7 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self?.handleUserTranscript(finalTranscript)
                     }
                 )
             }
@@ -1321,6 +1344,9 @@ final class CompanionManager: ObservableObject {
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
     - no wrap-ups, bonus tips or offers at the end, and no yes/no questions like "want me to explain more?". stop as soon as the question is answered.
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
+
+    conversations:
+    you remember this conversation. when it's long, its start comes to you as a short summary. if they ask to start over or to forget what you talked about, in any words, say a few words like "okay, fresh start." and add [SESSION:new]. don't add it just because they changed the subject.
 
     showing things on screen:
     you can point and draw right on top of their screen, like a friend leaning over their shoulder with a marker. the cursor flies over and does it while you talk. use it whenever showing would help more than telling: where a button is, what to click next, which setting matters, what's wrong. skip it for general questions that have nothing to do with the screen.
@@ -1375,6 +1401,91 @@ final class CompanionManager: ObservableObject {
     /// spinner/processing state until the first point or drawing (or the audio).
     /// Claude's response may include [POINT:...] and [DRAW:...] tags that fly
     /// the buddy to elements and sketch on the screen.
+    /// What the user said. Starting over and going back to an older
+    /// conversation are handled here on the Mac; everything else goes to Claude.
+    func handleUserTranscript(_ transcript: String) {
+        if conversationStore.isCurrentSessionIdle(at: Date(), idleLimitSeconds: Self.conversationIdleLimitSeconds) {
+            print("🧠 Quiet for a while: starting a new conversation")
+            conversationStore.startNewSession()
+        }
+
+        switch ConversationVoiceCommand.parse(transcript) {
+        case .startNewSession(let followingQuestion):
+            conversationStore.startNewSession()
+            print("🧠 New conversation (asked by voice)")
+            if let followingQuestion {
+                sendTranscriptToClaudeWithScreenshot(transcript: followingQuestion)
+            } else {
+                speakConversationConfirmation("Okay, fresh start.")
+            }
+        case .resumeSession(let topic):
+            if let matchingConversation = ConversationSearch.bestMatchingSession(
+                forTopic: topic,
+                in: conversationStore.sessions,
+                excludingSessionID: conversationStore.currentSessionID
+            ) {
+                conversationStore.resumeSession(withID: matchingConversation.id)
+                print("🧠 Back to conversation \"\(matchingConversation.title)\"")
+                speakConversationConfirmation("Okay, back to \(matchingConversation.title.lowercased()).")
+            } else {
+                speakConversationConfirmation(topic.map { "I couldn't find a conversation about \($0). You can pick one in History, in the menu bar." }
+                    ?? "There's no earlier conversation yet.")
+            }
+        case nil:
+            sendTranscriptToClaudeWithScreenshot(transcript: transcript)
+        }
+    }
+
+    func startNewConversation() {
+        resetGuidedSteps()
+        conversationStore.startNewSession()
+    }
+
+    func continueConversation(withID conversationID: UUID) {
+        resetGuidedSteps()
+        conversationStore.resumeSession(withID: conversationID)
+    }
+
+    private func speakConversationConfirmation(_ confirmationText: String) {
+        sentenceSpeaker.stopSpeaking()
+        agentAnnouncementSpeaker.enqueueSentence(confirmationText, sentenceIndex: 0)
+        scheduleTransientHideIfNeeded()
+    }
+
+    /// Once a conversation is too long to send whole, folds the exchanges that
+    /// fell out of the word-for-word window into its summary, in the background.
+    private func summarizeEarlierExchangesIfNeeded(in conversationSession: ConversationSession) {
+        guard !conversationIDsBeingSummarized.contains(conversationSession.id),
+              let (exchangesToFold, summarizedExchangeCountAfterwards) = ConversationContext.exchangesToSummarize(in: conversationSession) else { return }
+        conversationIDsBeingSummarized.insert(conversationSession.id)
+        let summaryRequest = ConversationContext.summaryRequest(
+            previousSummary: conversationSession.earlierSummary,
+            exchangesToFold: exchangesToFold
+        )
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.conversationIDsBeingSummarized.remove(conversationSession.id) }
+            do {
+                let (summaryText, _) = try await self.conversationSummaryBackend.analyzeImageStreaming(
+                    images: [],
+                    systemPrompt: ConversationContext.summarizerSystemPrompt,
+                    userPrompt: summaryRequest,
+                    onTextChunk: { _ in }
+                )
+                let trimmedSummaryText = summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedSummaryText.isEmpty else { return }
+                self.conversationStore.updateEarlierSummary(
+                    ofSessionWithID: conversationSession.id,
+                    summary: trimmedSummaryText,
+                    summarizedExchangeCount: summarizedExchangeCountAfterwards
+                )
+                print("🧠 Summarized the first \(summarizedExchangeCountAfterwards) exchanges of \"\(conversationSession.title)\"")
+            } catch {
+                print("⚠️ Couldn't summarize the conversation: \(error.localizedDescription)")
+            }
+        }
+    }
+
     func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         sentenceSpeaker.stopSpeaking()
@@ -1416,14 +1527,18 @@ final class CompanionManager: ObservableObject {
                     return (data: capture.imageData, label: capture.label + dimensionInfo)
                 }
 
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
+                // The conversation so far: recent exchanges word for word, the
+                // start of a long one as a summary
+                let (earlierConversationSummary, recentExchanges) = ConversationContext.context(for: conversationStore.currentSession)
+                let historyForAPI = recentExchanges.map { conversationExchange in
+                    (userPlaceholder: conversationExchange.userTranscript, assistantResponse: conversationExchange.assistantResponse)
                 }
+                let frontmostAppNameWhenAsked = NSWorkspace.shared.frontmostApplication?.localizedName
 
                 let (fullResponseText, _) = try await chatBackend.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    earlierConversationSummary: earlierConversationSummary,
                     conversationHistory: historyForAPI,
                     userPrompt: didUserDrawOnScreen
                         ? "\(transcript)\n\n(i drew on my screen in red to show you what i mean)"
@@ -1442,15 +1557,24 @@ final class CompanionManager: ObservableObject {
                 receiveStreamedAnswerText(fullResponseText, isAnswerComplete: true)
                 await waitForStreamingAnswerToSettle()
 
-                // History keeps the tags: answers without them teach Claude to
-                // stop pointing and drawing in later turns.
-                conversationHistory.append((userTranscript: transcript, assistantResponse: fullResponseText))
                 completedVoiceAnswerCount += 1
-                // Keep only the last 10 exchanges to avoid unbounded context growth
-                if conversationHistory.count > 10 {
-                    conversationHistory.removeFirst(conversationHistory.count - 10)
+                if answerAskedForNewConversation {
+                    conversationStore.startNewSession()
+                    print("🧠 Claude started a new conversation")
+                } else {
+                    // The saved answer keeps its tags: answers without them teach
+                    // Claude to stop pointing and drawing in later turns.
+                    let updatedConversation = conversationStore.recordExchange(ConversationExchange(
+                        id: UUID(),
+                        askedAt: screenCaptureDate,
+                        userTranscript: transcript,
+                        assistantResponse: fullResponseText,
+                        isGuidedStepFollowUp: transcript.hasPrefix("(guided step)"),
+                        frontmostAppName: frontmostAppNameWhenAsked
+                    ))
+                    print("🧠 Conversation \"\(updatedConversation.title)\": \(updatedConversation.exchanges.count) exchanges")
+                    summarizeEarlierExchangesIfNeeded(in: updatedConversation)
                 }
-                print("🧠 Conversation history: \(conversationHistory.count) exchanges")
                 ClickyAnalytics.trackAIResponseReceived(response: ClaudeVisualTagParser.parseVisualBeats(from: fullResponseText).spokenText)
             } catch where Self.isCancellation(error) {
                 // User spoke again (or clicked a guided step) — response was interrupted
@@ -1892,7 +2016,7 @@ final class CompanionManager: ObservableObject {
             Task { @MainActor in
                 print("🧪 Debug ask: \(transcript)")
                 self?.resetGuidedSteps()
-                self?.sendTranscriptToClaudeWithScreenshot(transcript: transcript)
+                self?.handleUserTranscript(transcript)
             }
         }
         distributedNotificationCenter.addObserver(forName: Notification.Name("com.clicky.debug.present"), object: nil, queue: .main) { [weak self] notification in

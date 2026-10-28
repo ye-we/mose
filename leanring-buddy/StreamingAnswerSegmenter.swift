@@ -4,7 +4,7 @@
 //
 //  Cuts Claude's answer into sentences while it's still streaming in, so
 //  Clicky can start speaking the first sentence instead of waiting for the
-//  whole answer. POINT, DRAW and AGENT tags are pulled out as they complete
+//  whole answer. POINT, DRAW, AGENT and SESSION tags are pulled out as they complete
 //  and attached to the sentence they follow, so each mark can appear exactly
 //  when that sentence starts being spoken.
 //
@@ -107,7 +107,12 @@ struct StreamingAnswerSegmenter {
     }
 
     static func isClickyTag(_ bracketedText: String) -> Bool {
-        bracketedText.range(of: #"^\[\s*(POINT|DRAW|AGENT)\s*:"#, options: [.regularExpression, .caseInsensitive]) != nil
+        bracketedText.range(of: #"^\[\s*(POINT|DRAW|AGENT|SESSION)\s*:"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// "[SESSION:new]": the user asked to start a new conversation.
+    static func isSessionTag(_ tagText: String) -> Bool {
+        tagText.range(of: #"^\[\s*SESSION\s*:"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     static func isAgentTag(_ tagText: String) -> Bool {

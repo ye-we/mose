@@ -87,6 +87,21 @@ MainActor.assumeIsolated {
     closedDeck.finish(closingText: "Done, your PDF is saving to Downloads.")
     render(stepCardsScene(closedDeck), size: NSSize(width: 1280, height: 820), name: "cards-3-done")
 
+    // Conversations: a panel with a current conversation, and the history window
+    let conversationsManager = manager { $0.claudeCodeSetupState = .ready(account); $0.hasMicrophonePermission = true; $0.hasAccessibilityPermission = true; $0.hasScreenRecordingPermission = true; $0.hasScreenContentPermission = true; $0.hasCompletedOnboarding = true }
+    func exchange(_ question: String, _ answer: String, minutesAgo: Double, app: String? = "Codex", guided: Bool = false) -> ConversationExchange {
+        ConversationExchange(id: UUID(), askedAt: Date().addingTimeInterval(-minutesAgo * 60), userTranscript: question, assistantResponse: answer, isGuidedStepFollowUp: guided, frontmostAppName: app)
+    }
+    let conversationStore = conversationsManager.conversationStore
+    conversationStore.recordExchange(exchange("how can i make a smooth transition between two songs?", "match the bpm first, then bring the new track in on a quiet intro while you crossfade.", minutesAgo: 60 * 26, app: "Mixxx"))
+    conversationStore.recordExchange(exchange("what about the bass?", "cut the bass on the incoming track until the drop, then swap it over. [POINT:none]", minutesAgo: 60 * 26 - 2, app: "Mixxx"))
+    conversationStore.startNewSession()
+    conversationStore.recordExchange(exchange("hey, how do i export this as a pdf?", "click file up in the menu bar. [DRAW:target 62,4,92,22 label=\"file\"]", minutesAgo: 9, app: "Pages"))
+    conversationStore.recordExchange(exchange("(guided step) i clicked file. what's next?", "now pick export as pdf near the bottom of the menu. [DRAW:target 70,410,190,430 label=\"export as pdf\"]", minutesAgo: 8, app: "Pages", guided: true))
+    conversationStore.recordExchange(exchange("(guided step) i clicked export as pdf. what's next?", "done, it's saving to your downloads folder.", minutesAgo: 8, app: "Pages", guided: true))
+    render(CompanionPanelView(companionManager: conversationsManager).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-conversation")
+    render(ConversationHistoryView(conversationStore: conversationStore, onContinue: { _ in }, onStartNew: {}), size: NSSize(width: 860, height: 580), name: "history-window")
+
     let panelProblem = manager { $0.claudeCodeSetupState = .notSignedIn; $0.hasCompletedOnboarding = true }
     render(CompanionPanelView(companionManager: panelProblem).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-signed-out")
 }

@@ -19,9 +19,12 @@ import Foundation
 protocol CompanionChatBackend: AnyObject {
     var model: String { get set }
 
+    /// `earlierConversationSummary` stands in for exchanges too old to send
+    /// word for word; `conversationHistory` is the recent ones, oldest first.
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
+        earlierConversationSummary: String?,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
         userPrompt: String,
         onTextChunk: @MainActor @Sendable (String) -> Void
@@ -48,7 +51,25 @@ extension CompanionChatBackend {
         try await analyzeImageStreaming(
             images: images,
             systemPrompt: systemPrompt,
+            earlierConversationSummary: nil,
             conversationHistory: [],
+            userPrompt: userPrompt,
+            onTextChunk: onTextChunk
+        )
+    }
+
+    func analyzeImageStreaming(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
+        userPrompt: String,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval) {
+        try await analyzeImageStreaming(
+            images: images,
+            systemPrompt: systemPrompt,
+            earlierConversationSummary: nil,
+            conversationHistory: conversationHistory,
             userPrompt: userPrompt,
             onTextChunk: onTextChunk
         )
@@ -75,10 +96,14 @@ final class ClaudeCodeChatClient: CompanionChatBackend {
     }()
 
     private let waitingProcessPool = WaitingClaudeProcessPool()
+    /// Voice answers keep a started process ready for the next turn; one-off
+    /// jobs like summaries don't, so no idle process is left behind for them.
+    private let keepsProcessWaitingForNextRequest: Bool
 
-    init(model: String, isExtendedThinkingEnabled: Bool) {
+    init(model: String, isExtendedThinkingEnabled: Bool, keepsProcessWaitingForNextRequest: Bool = true) {
         self.model = model
         self.isExtendedThinkingEnabled = isExtendedThinkingEnabled
+        self.keepsProcessWaitingForNextRequest = keepsProcessWaitingForNextRequest
     }
 
     /// The `claude` arguments for a voice turn. Tools, MCP servers, the user's
@@ -138,6 +163,7 @@ final class ClaudeCodeChatClient: CompanionChatBackend {
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
+        earlierConversationSummary: String?,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
         userPrompt: String,
         onTextChunk: @MainActor @Sendable (String) -> Void
@@ -147,6 +173,7 @@ final class ClaudeCodeChatClient: CompanionChatBackend {
         let claudeArguments = currentClaudeArguments(systemPrompt: systemPrompt)
         let userMessageLine = try ClaudeCodeCLI.userMessageLine(
             images: images,
+            earlierConversationSummary: earlierConversationSummary,
             conversationHistory: conversationHistory,
             userPrompt: userPrompt
         )
@@ -154,7 +181,8 @@ final class ClaudeCodeChatClient: CompanionChatBackend {
         let (startedProcess, wasAlreadyStarted) = try waitingProcessPool.takeProcess(
             claudeArguments: claudeArguments,
             installation: foundInstallation,
-            workingDirectoryURL: emptyWorkingDirectoryURL
+            workingDirectoryURL: emptyWorkingDirectoryURL,
+            startsReplacementForNextRequest: keepsProcessWaitingForNextRequest
         )
         let payloadSizeInMegabytes = Double(userMessageLine.utf8.count) / 1_048_576.0
         print("🌐 Claude Code request: \(String(format: "%.1f", payloadSizeInMegabytes))MB, \(images.count) image(s), \(ClaudeCodeCLI.modelAlias(forRequestedModel: model))\(wasAlreadyStarted ? ", pre-started" : "")")
@@ -266,7 +294,8 @@ final class WaitingClaudeProcessPool {
     func takeProcess(
         claudeArguments: [String],
         installation: ClaudeCodeInstallation,
-        workingDirectoryURL: URL
+        workingDirectoryURL: URL,
+        startsReplacementForNextRequest: Bool = true
     ) throws -> (startedProcess: StartedClaudeProcess, wasAlreadyStarted: Bool) {
         lock.lock()
         removeExpiredProcessesWhileLocked()
@@ -290,7 +319,9 @@ final class WaitingClaudeProcessPool {
             wasAlreadyStarted = false
         }
 
-        ensureWaitingProcess(claudeArguments: claudeArguments, installation: installation, workingDirectoryURL: workingDirectoryURL)
+        if startsReplacementForNextRequest {
+            ensureWaitingProcess(claudeArguments: claudeArguments, installation: installation, workingDirectoryURL: workingDirectoryURL)
+        }
         return (startedProcess, wasAlreadyStarted)
     }
 

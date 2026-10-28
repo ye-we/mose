@@ -28,6 +28,17 @@ struct CompanionPanelView: View {
                 shortcutHints
                     .padding(.horizontal, 16)
                     .padding(.bottom, 14)
+                hairline
+                CurrentConversationPanelRow(
+                    conversationStore: companionManager.conversationStore,
+                    onStartNew: { companionManager.startNewConversation() },
+                    onOpenHistory: {
+                        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+                        NotificationCenter.default.post(name: .clickyOpenConversationHistory, object: nil)
+                    }
+                )
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
             }
 
             if !companionManager.backgroundAgentJobs.isEmpty {

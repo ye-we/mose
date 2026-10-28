@@ -636,5 +636,138 @@ do {
     check(GuidedStepCardDeck.cardCorner(screenSize: screenSize, topInset: 37, cardSize: cardSize, margin: 16, avoiding: CGRect(x: 1180, y: 40, width: 320, height: 930)) == .topLeading, "a tall target on the right moves them to the left")
 }
 
+// MARK: Conversations — voice commands
+do {
+    func parsed(_ transcript: String) -> ConversationVoiceCommand? { ConversationVoiceCommand.parse(transcript) }
+    check(parsed("Start a new session.") == .startNewSession(followingQuestion: nil), "\"start a new session\"")
+    check(parsed("new chat please") == .startNewSession(followingQuestion: nil), "\"new chat please\"")
+    check(parsed("Hey Clicky, start over.") == .startNewSession(followingQuestion: nil), "a wake word before the command")
+    check(parsed("Let's start fresh") == .startNewSession(followingQuestion: nil), "\"let's start fresh\"")
+    check(parsed("forget everything") == .startNewSession(followingQuestion: nil), "\"forget everything\"")
+    check(parsed("Clear the context.") == .startNewSession(followingQuestion: nil), "\"clear the context\"")
+    check(parsed("New chat. How do I export this as a PDF?") == .startNewSession(followingQuestion: "How do I export this as a PDF?"), "a command followed by a question keeps the question")
+    check(parsed("new topic, what's a context window") == .startNewSession(followingQuestion: "what's a context window"), "\"new topic\" then a question")
+    check(parsed("How do I start a new chat?") == nil, "a question about starting a chat isn't a command")
+    check(parsed("start a new chat in slack") == nil, "a request about an app isn't a command")
+    check(parsed("start a new thread") == nil, "\"new thread\" is left to apps like Slack")
+    check(parsed("what do you see here?") == nil, "ordinary questions aren't commands")
+    check(parsed("Go back to the chat about DJ transitions.") == .resumeSession(topic: "dj transitions"), "going back to a chat by topic")
+    check(parsed("can we go back to the conversation about invoices, please") == .resumeSession(topic: "invoices"), "a polite resume keeps its topic")
+    check(parsed("continue my last conversation") == .resumeSession(topic: nil), "\"continue my last conversation\"")
+    check(parsed("back to our previous chat") == .resumeSession(topic: nil), "\"back to our previous chat\"")
+    check(parsed("open the chat") == nil, "\"open the chat\" could be about an app")
+}
+
+// MARK: Conversations — titles, context and summaries
+do {
+    check(ConversationTitle.title(fromFirstQuestion: "hey, how do i export this as a pdf?") == "How do I export this as a…", "a title from the first question: \(ConversationTitle.title(fromFirstQuestion: "hey, how do i export this as a pdf?"))")
+    check(ConversationTitle.title(fromFirstQuestion: "um what's a context window") == "What's a context window", "fillers are dropped from titles")
+    check(ConversationTitle.title(fromFirstQuestion: "  ") == "New conversation", "an empty question gets a plain title")
+
+    func makeExchange(_ index: Int, answerLength: Int = 40, isGuidedStep: Bool = false) -> ConversationExchange {
+        ConversationExchange(id: UUID(), askedAt: Date(timeIntervalSince1970: TimeInterval(1_800_000_000 + index * 60)),
+                             userTranscript: "question \(index)", assistantResponse: String(repeating: "a", count: answerLength),
+                             isGuidedStepFollowUp: isGuidedStep, frontmostAppName: nil)
+    }
+    func makeSession(exchangeCount: Int, answerLength: Int = 40, summarizedExchangeCount: Int = 0, summary: String? = nil) -> ConversationSession {
+        ConversationSession(id: UUID(), title: "t", startedAt: Date(), lastActivityAt: Date(),
+                            exchanges: (0..<exchangeCount).map { makeExchange($0, answerLength: answerLength) },
+                            earlierSummary: summary, summarizedExchangeCount: summarizedExchangeCount)
+    }
+
+    let shortConversation = makeSession(exchangeCount: 5)
+    check(ConversationContext.context(for: shortConversation).recentExchanges.count == 5 && ConversationContext.context(for: shortConversation).earlierSummary == nil, "a short conversation goes whole")
+    check(ConversationContext.exchangesToSummarize(in: shortConversation) == nil, "a short conversation needs no summary")
+    check(ConversationContext.context(for: nil).recentExchanges.isEmpty, "no conversation, no context")
+
+    let longUnsummarized = makeSession(exchangeCount: 20)
+    let foldPlan = ConversationContext.exchangesToSummarize(in: longUnsummarized)
+    check(foldPlan?.exchanges.count == 8 && foldPlan?.summarizedExchangeCountAfterwards == 8, "the exchanges past the window get summarized")
+    check(ConversationContext.context(for: longUnsummarized).recentExchanges.count == 20, "until the summary exists, nothing is dropped")
+
+    let longSummarized = makeSession(exchangeCount: 20, summarizedExchangeCount: 8, summary: "they were mixing two songs")
+    let summarizedContext = ConversationContext.context(for: longSummarized)
+    check(summarizedContext.earlierSummary == "they were mixing two songs" && summarizedContext.recentExchanges.count == ConversationContext.maximumVerbatimExchangeCount, "a summary plus the most recent exchanges")
+    check(summarizedContext.recentExchanges.first?.userTranscript == "question 8", "the recent part starts right where the summary ends")
+    check(ConversationContext.exchangesToSummarize(in: longSummarized) == nil, "an up-to-date summary needs no update")
+
+    let veryLongUnsummarized = makeSession(exchangeCount: 40)
+    check(ConversationContext.context(for: veryLongUnsummarized).recentExchanges.count <= ConversationContext.maximumVerbatimExchangeCount * 2, "a summary that keeps failing can't grow the context forever")
+
+    let longAnswers = makeSession(exchangeCount: 10, answerLength: 2_000, summarizedExchangeCount: 10, summary: "s")
+    let longAnswersContext = ConversationContext.context(for: longAnswers)
+    let longAnswersCharacters = longAnswersContext.recentExchanges.reduce(0) { $0 + $1.userTranscript.count + $1.assistantResponse.count }
+    check(longAnswersCharacters <= ConversationContext.verbatimCharacterBudget && longAnswersContext.recentExchanges.count >= 1, "long answers are limited by the character budget")
+
+    let oneHugeAnswer = makeSession(exchangeCount: 1, answerLength: 20_000)
+    check(ConversationContext.context(for: oneHugeAnswer).recentExchanges.count == 1, "the latest exchange always goes, even when it's long")
+
+    check(ConversationContext.spokenText(of: "click file. [DRAW:target 1,2,3,4 label=\"file\"] [SESSION:new]") == "click file.", "saved answers are shown without tags")
+    let summaryRequest = ConversationContext.summaryRequest(previousSummary: "they asked about bpm", exchangesToFold: [makeExchange(1)])
+    check(summaryRequest.contains("they asked about bpm") && summaryRequest.contains("they said: question 1"), "the summary request has the old summary and the new exchanges")
+}
+
+// MARK: Conversations — saved on disk
+MainActor.assumeIsolated {
+    let conversationsFolder = FileManager.default.temporaryDirectory.appendingPathComponent("clicky-conversation-tests-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: conversationsFolder) }
+    let conversationStore = ConversationSessionStore(conversationsDirectoryURL: conversationsFolder)
+    check(conversationStore.sessions.isEmpty && conversationStore.currentSession == nil, "a new store is empty")
+
+    let firstAskedAt = Date().addingTimeInterval(-7_200)
+    conversationStore.recordExchange(ConversationExchange(id: UUID(), askedAt: firstAskedAt, userTranscript: "how do i mix two songs smoothly", assistantResponse: "match the bpm first. [POINT:none]", isGuidedStepFollowUp: false, frontmostAppName: "Mixxx"))
+    conversationStore.recordExchange(ConversationExchange(id: UUID(), askedAt: firstAskedAt.addingTimeInterval(60), userTranscript: "and the bass?", assistantResponse: "cut it until the drop.", isGuidedStepFollowUp: false, frontmostAppName: "Mixxx"))
+    let firstConversationID = conversationStore.currentSessionID
+    check(conversationStore.sessions.count == 1 && conversationStore.currentSession?.exchanges.count == 2, "exchanges go into one conversation")
+    check(conversationStore.currentSession?.title == "How do I mix two songs smoothly", "the conversation is titled from its first question")
+    let savedFileNames = (try? FileManager.default.contentsOfDirectory(atPath: conversationsFolder.path)) ?? []
+    check(savedFileNames.count == 1 && savedFileNames[0].hasSuffix(".json"), "each conversation is saved as a file")
+
+    conversationStore.startNewSession()
+    check(conversationStore.currentSession == nil, "starting over leaves nothing current until the next question")
+    conversationStore.recordExchange(ConversationExchange(id: UUID(), askedAt: firstAskedAt.addingTimeInterval(3_600), userTranscript: "how do i export this as a pdf", assistantResponse: "click file.", isGuidedStepFollowUp: false, frontmostAppName: "Pages"))
+    check(conversationStore.sessions.count == 2 && conversationStore.currentSessionID != firstConversationID, "the next question starts a second conversation")
+    let secondConversationID = conversationStore.currentSessionID
+
+    let reopenedStore = ConversationSessionStore(conversationsDirectoryURL: conversationsFolder)
+    check(reopenedStore.sessions.count == 2 && reopenedStore.sessions.first?.id == secondConversationID, "conversations come back after a restart, newest first")
+    check(reopenedStore.session(withID: firstConversationID!)?.exchanges.last?.frontmostAppName == "Mixxx", "saved exchanges keep their details")
+
+    reopenedStore.resumeSession(withID: firstConversationID!)
+    check(reopenedStore.currentSessionID == firstConversationID, "an older conversation can be continued")
+    check(!reopenedStore.isCurrentSessionIdle(at: Date(), idleLimitSeconds: 1_800), "a conversation just picked to continue isn't idle")
+
+    reopenedStore.updateEarlierSummary(ofSessionWithID: firstConversationID!, summary: "they mix music", summarizedExchangeCount: 1)
+    check(reopenedStore.session(withID: firstConversationID!)?.earlierSummary == "they mix music", "summaries are saved")
+    reopenedStore.updateEarlierSummary(ofSessionWithID: firstConversationID!, summary: "stale", summarizedExchangeCount: 1)
+    check(reopenedStore.session(withID: firstConversationID!)?.earlierSummary == "they mix music", "a summary never replaces a newer one")
+
+    let idleStore = ConversationSessionStore(conversationsDirectoryURL: conversationsFolder)
+    idleStore.resumeSession(withID: firstConversationID!)
+    check(idleStore.isCurrentSessionIdle(at: Date().addingTimeInterval(3_600), idleLimitSeconds: 1_800), "an hour of quiet makes the conversation idle")
+
+    let searchCandidates = reopenedStore.sessions
+    check(ConversationSearch.bestMatchingSession(forTopic: "dj mixing", in: searchCandidates, excludingSessionID: nil)?.id == firstConversationID, "\"mixing\" finds the music conversation by its words")
+    check(ConversationSearch.bestMatchingSession(forTopic: "exporting", in: searchCandidates, excludingSessionID: nil)?.id == secondConversationID, "a title match wins, and word endings don't matter")
+    check(ConversationSearch.bestMatchingSession(forTopic: "spreadsheets", in: searchCandidates, excludingSessionID: nil) == nil, "an unknown topic finds nothing")
+    check(ConversationSearch.bestMatchingSession(forTopic: nil, in: searchCandidates, excludingSessionID: firstConversationID)?.id == secondConversationID, "no topic means the most recent other conversation")
+    check(ConversationSearch.sessions(searchCandidates, matching: "bpm drop").count == 1 && ConversationSearch.sessions(searchCandidates, matching: "bpm pdf").isEmpty, "history search needs every word")
+
+    reopenedStore.deleteSession(withID: firstConversationID!)
+    check(reopenedStore.sessions.count == 1 && reopenedStore.currentSessionID == nil, "deleting the current conversation leaves none current")
+    reopenedStore.deleteAllSessions()
+    let remainingFileNames = (try? FileManager.default.contentsOfDirectory(atPath: conversationsFolder.path)) ?? []
+    check(reopenedStore.sessions.isEmpty && remainingFileNames.isEmpty, "delete all removes every file")
+}
+
+// MARK: Conversations — the SESSION tag
+do {
+    check(StreamingAnswerSegmenter.isSessionTag("[SESSION:new]") && StreamingAnswerSegmenter.isClickyTag("[SESSION:new]"), "the SESSION tag is a Clicky tag")
+    var sessionSegmenter = StreamingAnswerSegmenter()
+    let sessionPieces = sessionSegmenter.consume(accumulatedAnswerText: "okay, fresh start. [SESSION:new]", isAnswerComplete: true)
+    let spokenSessionPieces = sessionPieces.compactMap { piece -> String? in if case .sentence(_, let text) = piece { return text } else { return nil } }
+    check(spokenSessionPieces == ["okay, fresh start."], "the SESSION tag is never spoken: \(spokenSessionPieces)")
+}
+
 print("\(checkCount - failureCount)/\(checkCount) checks passed")
 exit(failureCount == 0 ? 0 : 1)

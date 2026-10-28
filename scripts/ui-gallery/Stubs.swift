@@ -36,6 +36,11 @@ final class CompanionManager: ObservableObject {
     @Published var isExtendedThinkingEnabled = false
     @Published var isOpenAtLoginEnabled = true
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
+    var conversationStore = ConversationSessionStore(
+        conversationsDirectoryURL: FileManager.default.temporaryDirectory.appendingPathComponent("gallery-conversations-\(UUID().uuidString)")
+    )
+    func startNewConversation() { conversationStore.startNewSession() }
+    func continueConversation(withID conversationID: UUID) { conversationStore.resumeSession(withID: conversationID) }
 
     var allPermissionsGranted: Bool { hasMicrophonePermission && hasAccessibilityPermission && hasScreenRecordingPermission && hasScreenContentPermission }
 

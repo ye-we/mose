@@ -95,7 +95,7 @@ struct GuidedStepCardDeck: Equatable {
     /// What goes on a card: the spoken answer without its tags, as a sentence,
     /// cut at a word boundary if it's long.
     static func cardText(fromAnswerText answerText: String) -> String {
-        let tagFreeText = answerText.replacingOccurrences(of: #"\[(POINT|DRAW|AGENT):[^\]]*\]"#, with: " ", options: .regularExpression)
+        let tagFreeText = answerText.replacingOccurrences(of: #"\[(POINT|DRAW|AGENT|SESSION):[^\]]*\]"#, with: " ", options: .regularExpression)
         let singleSpacedText = tagFreeText
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")

@@ -33,6 +33,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private let companionManager = CompanionManager()
     private var setupWindowController: SetupWindowController?
     private var openSetupObserver: NSObjectProtocol?
+    private var conversationHistoryWindowController: ConversationHistoryWindowController?
+    private var openConversationHistoryObserver: NSObjectProtocol?
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -56,6 +58,15 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.setupWindowController?.showSetup() }
+        }
+
+        conversationHistoryWindowController = ConversationHistoryWindowController(companionManager: companionManager)
+        openConversationHistoryObserver = NotificationCenter.default.addObserver(
+            forName: .clickyOpenConversationHistory,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.conversationHistoryWindowController?.showHistory() }
         }
 
         companionManager.start()

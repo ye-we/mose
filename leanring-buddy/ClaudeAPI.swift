@@ -101,6 +101,7 @@ class ClaudeAPI {
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
+        earlierConversationSummary: String?,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
         onTextChunk: @MainActor @Sendable (String) -> Void
@@ -111,6 +112,12 @@ class ClaudeAPI {
 
         // Build messages array
         var messages: [[String: Any]] = []
+
+        // Exchanges too old to send word for word arrive as one summarized turn
+        if let earlierConversationSummary {
+            messages.append(["role": "user", "content": "(how our conversation started, in short: \(earlierConversationSummary))"])
+            messages.append(["role": "assistant", "content": "got it."])
+        }
 
         for (userPlaceholder, assistantResponse) in conversationHistory {
             messages.append(["role": "user", "content": userPlaceholder])

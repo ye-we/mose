@@ -13,9 +13,14 @@ enum ClickyAnalytics {
 
     // MARK: - Setup
 
+    /// Analytics stay off unless a PostHog key is added to Info.plist as
+    /// PostHogAPIKey. The upstream project's own key used to be written here,
+    /// which would have sent every user's transcripts to that project.
     static func configure() {
+        guard let postHogAPIKey = Bundle.main.object(forInfoDictionaryKey: "PostHogAPIKey") as? String,
+              !postHogAPIKey.isEmpty else { return }
         let config = PostHogConfig(
-            apiKey: "phc_xcQPygmhTMzzYh8wNW92CCwoXmnzqyChAixh8zgpqC3C",
+            apiKey: postHogAPIKey,
             host: "https://us.i.posthog.com"
         )
         PostHogSDK.shared.setup(config)
