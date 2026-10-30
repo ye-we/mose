@@ -14,6 +14,8 @@ swiftc -o "$gallery_binary_path" \
   "$repository_root/leanring-buddy/DesignSystem.swift" \
   "$repository_root/leanring-buddy/InkAndKeycapViews.swift" \
   "$repository_root/leanring-buddy/ScreenSketch.swift" \
+  "$repository_root/leanring-buddy/DevilMode.swift" \
+  "$repository_root/leanring-buddy/DevilModeDrivingNoteView.swift" \
   "$repository_root/leanring-buddy/ScreenSketchLayer.swift" \
   "$repository_root/leanring-buddy/SetupWindow.swift" \
   "$repository_root/leanring-buddy/CompanionPanelView.swift" \

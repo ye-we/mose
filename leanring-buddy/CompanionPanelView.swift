@@ -289,6 +289,13 @@ struct CompanionPanelView: View {
                 )
             }
 
+            settingsRow(title: "Devil mode", caption: "\(AppIdentity.displayName) can click and type for you") {
+                settingsToggle(
+                    isOn: companionManager.isDevilModeEnabled,
+                    onChange: { companionManager.setDevilModeEnabled($0) }
+                )
+            }
+
             settingsRow(title: "Apps for background tasks", caption: connectedAppsCaption) {
                 Button("Choose") {
                     NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)

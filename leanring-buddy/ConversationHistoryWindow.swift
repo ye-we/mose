@@ -612,6 +612,9 @@ struct ConversationHistoryView: View {
         if followUpTranscript == GuidedStepAnswerCheck.missingTargetFollowUpTranscript {
             return "\(AppIdentity.displayName) marked where to click"
         }
+        if DevilModeFollowUp.isDevilStepTranscript(followUpTranscript) {
+            return DevilModeFollowUp.historyDescription(of: followUpTranscript, assistantName: AppIdentity.displayName)
+        }
         if let clickedRange = followUpTranscript.range(of: #"i (right-)?clicked (somewhere else instead of )?(.+?)\. what"#, options: .regularExpression) {
             let clickedText = String(followUpTranscript[clickedRange])
                 .replacingOccurrences(of: #"^i (right-)?clicked "#, with: "", options: .regularExpression)

@@ -34,6 +34,7 @@ final class CompanionManager: ObservableObject {
     @Published var backgroundAgentJobs: [BackgroundAgentJob] = []
     @Published var selectedModel = "claude-sonnet-4-6"
     @Published var isExtendedThinkingEnabled = false
+    @Published var isDevilModeEnabled = false
     @Published var isOpenAtLoginEnabled = true
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     var conversationStore = ConversationSessionStore(
@@ -64,6 +65,7 @@ final class CompanionManager: ObservableObject {
     func showCompanionCursorForSetup() {}
     func setSelectedModel(_ model: String) { selectedModel = model }
     func setExtendedThinkingEnabled(_ isEnabled: Bool) { isExtendedThinkingEnabled = isEnabled }
+    func setDevilModeEnabled(_ isEnabled: Bool) { isDevilModeEnabled = isEnabled }
     func setOpenAtLoginEnabled(_ isEnabled: Bool) { isOpenAtLoginEnabled = isEnabled }
     func stopBackgroundAgentJob(_ job: BackgroundAgentJob) {}
     func openBackgroundAgentJobOutput(_ job: BackgroundAgentJob) {}

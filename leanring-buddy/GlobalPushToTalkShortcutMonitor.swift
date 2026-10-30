@@ -37,7 +37,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         // refreshAllPermissions → start() every few seconds.
         guard globalEventTap == nil else { return }
 
-        let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
+        // As little as the shortcut needs: with ctrl + option that's only
+        // modifier keys going down and up, never what's typed
+        let monitoredEventTypes: [CGEventType] = BuddyPushToTalkShortcut.doesCurrentShortcutNeedKeyPresses
+            ? [.flagsChanged, .keyDown, .keyUp]
+            : [.flagsChanged]
         let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
             currentMask | (CGEventMask(1) << eventType.rawValue)
         }
@@ -108,6 +112,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             if let globalEventTap {
                 CGEvent.tapEnable(tap: globalEventTap, enable: true)
             }
+            return Unmanaged.passUnretained(event)
+        }
+
+        // Keys devil mode presses (say, ctrl+option+left) must never start a recording
+        if event.getIntegerValueField(.eventSourceUserData) == DevilModeEventMark.eventSourceUserData {
             return Unmanaged.passUnretained(event)
         }
 

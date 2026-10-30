@@ -108,6 +108,9 @@ final class BackgroundAgentJobRunner: BackgroundAgentJobService {
             "--allowedTools", allowedToolRules,
             "--disallowedTools", disallowedTools,
             "--settings", sandboxSettingsJSON,
+            // Claude Code would otherwise keep the whole session (including the
+            // screenshot, if the agent opened it) in ~/.claude/projects
+            "--no-session-persistence",
         ]
         if connectedAppServerNames.isEmpty {
             arguments.append("--strict-mcp-config")
@@ -285,6 +288,7 @@ final class BackgroundAgentJobRunner: BackgroundAgentJobService {
         jobRecord.outputFiles = Self.outputFiles(inJobFolderPath: jobRecord.folder)
         jobRecordsByID[jobID] = jobRecord
         saveJob(withID: jobID)
+        Self.removeScreenshot(fromJobFolderPath: jobRecord.folder)
         print("🤖 Background agent \(jobID) \(jobRecord.status): \((jobRecord.result ?? "").prefix(120))")
     }
 
@@ -294,6 +298,13 @@ final class BackgroundAgentJobRunner: BackgroundAgentJobService {
         if let progressCount = jobRecordsByID[jobID]?.progress.count, progressCount > 40 {
             jobRecordsByID[jobID]?.progress.removeFirst()
         }
+    }
+
+    /// A job only needs the screenshot of the user's screen while it runs,
+    /// so it's deleted as soon as the job ends (or at the next launch).
+    nonisolated static func removeScreenshot(fromJobFolderPath jobFolderPath: String) {
+        let screenshotURL = URL(fileURLWithPath: jobFolderPath).appendingPathComponent("tmp/screen.jpg")
+        try? FileManager.default.removeItem(at: screenshotURL)
     }
 
     // MARK: - Saving and loading
@@ -325,6 +336,8 @@ final class BackgroundAgentJobRunner: BackgroundAgentJobService {
             } else {
                 jobRecordsByID[jobRecord.id] = jobRecord
             }
+            // Nothing runs at launch, so no job needs its screenshot any more
+            Self.removeScreenshot(fromJobFolderPath: jobRecord.folder)
         }
     }
 

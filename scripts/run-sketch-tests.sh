@@ -9,6 +9,7 @@ test_binary_path="$(mktemp -d)/sketch-tests"
 
 swiftc -O -o "$test_binary_path" \
   "$repository_root/leanring-buddy/ScreenSketch.swift" \
+  "$repository_root/leanring-buddy/DevilMode.swift" \
   "$repository_root/leanring-buddy/ScreenTextRecognizer.swift" \
   "$repository_root/leanring-buddy/StreamingAnswerSegmenter.swift" \
   "$repository_root/leanring-buddy/BackgroundAgentJobs.swift" \

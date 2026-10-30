@@ -94,6 +94,13 @@ enum BuddyPushToTalkShortcut {
 
     static let currentShortcutOption: ShortcutOption = .controlOption
 
+    /// Only the space-bar shortcuts need key presses. Modifier-only ones
+    /// (ctrl + option, and fn + control for dictation) are seen in modifier
+    /// changes alone, so the listener never sees which keys the user types.
+    static var doesCurrentShortcutNeedKeyPresses: Bool {
+        currentShortcutOption.modifierOnlyFlags == nil
+    }
+
     /// Whether the talk keys are down right now, read from the keyboard
     /// itself rather than from events, so a missed release can be noticed.
     static func isPushToTalkShortcutHeldDown() -> Bool {

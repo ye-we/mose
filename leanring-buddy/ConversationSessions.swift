@@ -297,10 +297,11 @@ enum ConversationContext {
         return "\(previousSummaryText)fold these later exchanges into the summary and reply with only the new summary:\n\(foldedTranscript)"
     }
 
-    /// An answer without its POINT, DRAW, AGENT, SESSION, REMEMBER and FORGET tags.
+    /// An answer without its POINT, DRAW, AGENT, SESSION, REMEMBER and FORGET tags,
+    /// or devil mode's action tags (CLICK, DRAG, SCROLL, TYPE, KEY and the rest).
     static func spokenText(of assistantResponse: String) -> String {
         assistantResponse
-            .replacingOccurrences(of: #"\[(POINT|DRAW|AGENT|SESSION|REMEMBER|FORGET):[^\]]*\]"#, with: " ", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: #"\[\s*(POINT|DRAW|AGENT|SESSION|REMEMBER|FORGET|CLICK|DOUBLE[-_ ]?CLICK|RIGHT[-_ ]?CLICK|DRAG|SCROLL|TYPE|KEY)\s*:[^\]]*\]"#, with: " ", options: [.regularExpression, .caseInsensitive])
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .replacingOccurrences(of: " .", with: ".")

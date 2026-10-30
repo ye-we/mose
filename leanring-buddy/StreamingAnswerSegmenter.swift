@@ -4,9 +4,10 @@
 //
 //  Cuts Claude's answer into sentences while it's still streaming in, so
 //  Clicky can start speaking the first sentence instead of waiting for the
-//  whole answer. POINT, DRAW, AGENT, SESSION, REMEMBER and FORGET tags are pulled out as they complete
-//  and attached to the sentence they follow, so each mark can appear exactly
-//  when that sentence starts being spoken.
+//  whole answer. POINT, DRAW, AGENT, SESSION, REMEMBER and FORGET tags, and
+//  devil mode's action tags, are pulled out as they complete and attached to
+//  the sentence they follow, so each mark can appear exactly when that
+//  sentence starts being spoken.
 //
 
 import Foundation
@@ -108,6 +109,7 @@ struct StreamingAnswerSegmenter {
 
     static func isClickyTag(_ bracketedText: String) -> Bool {
         bracketedText.range(of: #"^\[\s*(POINT|DRAW|AGENT|SESSION|REMEMBER|FORGET)\s*:"#, options: [.regularExpression, .caseInsensitive]) != nil
+            || DevilModeActionTagParser.isActionTag(bracketedText)
     }
 
     /// "[REMEMBER:they edit videos in final cut pro]": a fact to keep.

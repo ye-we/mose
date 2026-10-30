@@ -143,6 +143,36 @@ final class CompanionManager: ObservableObject {
     /// from that screenshot would land in the wrong place.
     private var lastScreenChangingInputDate: Date = .distantPast
 
+    // MARK: - Devil Mode State
+
+    /// Mose clicks, drags and types for the user when they ask it to do
+    /// something (DevilMode.swift). Off until they turn it on in the panel.
+    @Published private(set) var isDevilModeEnabled: Bool = UserDefaults.standard.bool(forKey: "isDevilModeEnabled")
+    /// True for a whole devil mode run: from the first answer with an action
+    /// until one without, the step limit, or the user taking over. The
+    /// overlay shows "Mose is driving" meanwhile.
+    @Published private(set) var isDevilModeDriving = false
+    /// What Mose is doing this moment ("Clicking export"), for the overlay note.
+    @Published private(set) var devilModeCurrentActionDescription: String?
+    /// The current answer's action tags, done once the answer is in.
+    private var devilModeActionTagsInCurrentAnswer: [String] = []
+    private var devilModeStepBudget = DevilModeStepBudget()
+    private var devilModeActionTask: Task<Void, Never>?
+    private let devilModeTakeoverMonitor = DevilModeTakeoverMonitor()
+    /// Mose asked "should I…?" before a risky action and waits for the
+    /// user's yes or no, which is their next push-to-talk.
+    private var devilModeQuestionAwaitingAnswer: String?
+    /// The user just said yes, so the next answer's risky actions go ahead
+    /// without asking again.
+    private var isNextDevilModeAnswerApprovedByUser = false
+    /// Time for the app to react to an action before the next screenshot.
+    private static let devilModeScreenSettleDelaySeconds: Double = 0.8
+    #if DEBUG
+    /// Live tests launch with CLICKY_DEVIL_ONLY_IN_APP=devil-practice, so a
+    /// wrong coordinate can never click or type into the user's real apps.
+    private static let devilModeOnlyAllowedAppNameForTests = ProcessInfo.processInfo.environment["CLICKY_DEVIL_ONLY_IN_APP"]
+    #endif
+
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
@@ -204,6 +234,17 @@ final class CompanionManager: ObservableObject {
         isExtendedThinkingEnabled = isEnabled
         UserDefaults.standard.set(isEnabled, forKey: "isClaudeExtendedThinkingEnabled")
         (chatBackend as? ClaudeCodeChatClient)?.isExtendedThinkingEnabled = isEnabled
+    }
+
+    func setDevilModeEnabled(_ isEnabled: Bool) {
+        isDevilModeEnabled = isEnabled
+        UserDefaults.standard.set(isEnabled, forKey: "isDevilModeEnabled")
+        print("😈 Devil mode \(isEnabled ? "on" : "off")")
+        if !isEnabled {
+            devilModeQuestionAwaitingAnswer = nil
+            isNextDevilModeAnswerApprovedByUser = false
+            endDevilModeRun()
+        }
     }
 
     // MARK: - Conversations
@@ -638,6 +679,7 @@ final class CompanionManager: ObservableObject {
         answerPointBeatCount = 0
         answerHasGuidedTarget = false
         answerNeedsItsMissingTargetMarked = false
+        devilModeActionTagsInCurrentAnswer = []
 
         let currentAnswerGeneration = answerGeneration
         sentenceSpeaker.onSentenceStartedSpeaking = { [weak self] sentenceIndex in
@@ -671,6 +713,8 @@ final class CompanionManager: ObservableObject {
                     rememberFact(fromRememberTag: tagText)
                 } else if StreamingAnswerSegmenter.isForgetTag(tagText) {
                     answerForgetRequests.append(StreamingAnswerSegmenter.tagContent(tagText))
+                } else if DevilModeActionTagParser.isActionTag(tagText) {
+                    receiveDevilModeActionTag(tagText, sentenceIndex: sentenceIndex)
                 } else {
                     resolveVisualTagInOrder(tagText, sentenceIndex: sentenceIndex)
                 }
@@ -761,7 +805,10 @@ final class CompanionManager: ObservableObject {
         isAnswerStreamComplete = true
 
         let answerCardText = currentAnswerCardText()
+        // In devil mode Mose does the clicks itself, so nothing is asked to be marked
         answerNeedsItsMissingTargetMarked = !answerHasGuidedTarget
+            && devilModeActionTagsInCurrentAnswer.isEmpty
+            && !isDevilModeDriving
             && !hasAskedForMissingGuidedTarget
             && guidedStepTurnsRemaining > 0
             && !answerAskedForNewConversation
@@ -895,11 +942,18 @@ final class CompanionManager: ObservableObject {
         sketchClearingInputMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .scrollWheel]
         ) { [weak self] inputEvent in
+            // Devil mode's own clicks and scrolls are Mose doing a step, not the user
+            if inputEvent.cgEvent?.getIntegerValueField(.eventSourceUserData) == DevilModeEventMark.eventSourceUserData {
+                return
+            }
             let isLeftClick = inputEvent.type == .leftMouseDown
             let isRightClick = inputEvent.type == .rightMouseDown
             let clickLocation = NSEvent.mouseLocation
             Task { @MainActor in
                 guard let self else { return }
+                // While Mose drives, the user's input is them taking over, which
+                // the takeover monitor handles
+                guard !self.isDevilModeDriving else { return }
                 self.lastScreenChangingInputDate = Date()
 
                 // In a guided walkthrough the click is the user doing the step
@@ -1034,6 +1088,7 @@ final class CompanionManager: ObservableObject {
     func advanceGuidedStepIfWaiting(afterClickAt clickLocation: CGPoint, wasRightClick: Bool = false) -> Bool {
         guard let pendingGuidedStepTarget,
               guidedStepTurnsRemaining > 0,
+              !isDevilModeDriving,
               voiceState != .listening else { return false }
 
         // Generous margin: the ring is drawn a little bigger than the target
@@ -1134,7 +1189,430 @@ final class CompanionManager: ObservableObject {
         )
     }
 
+    // MARK: - Devil Mode
+
+    /// Where a click, drag or scroll happens, worked out from the screenshot
+    /// the answer was given for.
+    private struct DevilModeResolvedTarget {
+        /// AppKit global coordinates, where the blue cursor flies first.
+        let appKitGlobalPoint: CGPoint
+        /// The same point in Quartz coordinates, for the CGEvents.
+        let quartzPoint: CGPoint
+        /// Where a drag lets go.
+        let quartzEndPoint: CGPoint?
+        let displayFrame: CGRect
+        /// The on-screen text inside a click's box, for the risky-word check.
+        let textUnderTarget: String?
+    }
+
+    /// An action tag in the answer streaming in. With devil mode on it's
+    /// done once the answer is in. With it off, a click is shown as a
+    /// guided-step target instead, so the user still sees where to click.
+    private func receiveDevilModeActionTag(_ tagText: String, sentenceIndex: Int) {
+        if isDevilModeEnabled {
+            devilModeActionTagsInCurrentAnswer.append(tagText)
+            return
+        }
+        guard case .click(_, let screenshotRect, let label, let screenNumber)? = DevilModeActionTagParser.parseActionTag(tagText) else {
+            print("😈 Devil mode is off: ignoring \(tagText)")
+            return
+        }
+        let labelSetting = label.map { " label=\"\($0.replacingOccurrences(of: "\"", with: ""))\"" } ?? ""
+        let screenSetting = screenNumber.map { " screen=\($0)" } ?? ""
+        let targetTagText = "[DRAW:target \(Int(screenshotRect.minX)),\(Int(screenshotRect.minY)),\(Int(screenshotRect.maxX)),\(Int(screenshotRect.maxY))\(labelSetting)\(screenSetting)]"
+        print("😈 Devil mode is off: showing \(tagText) as a target")
+        resolveVisualTagInOrder(targetTagText, sentenceIndex: sentenceIndex)
+    }
+
+    /// Once an answer is in: does its actions (one step) and then asks for
+    /// the next, or ends the run when it has none (the task is done or Claude
+    /// asked something).
+    private func continueDevilModeRunAfterAnswer() {
+        let isApprovedByUser = isNextDevilModeAnswerApprovedByUser
+        isNextDevilModeAnswerApprovedByUser = false
+        let actionTags = devilModeActionTagsInCurrentAnswer
+        devilModeActionTagsInCurrentAnswer = []
+        guard isDevilModeEnabled else { return }
+
+        var actionsToPerform = DevilModeActionPlan.actionsToPerform(actionTags.compactMap(DevilModeActionTagParser.parseActionTag))
+        if !actionsToPerform.isEmpty && DevilModeActionPlan.answerEndsWithAQuestion(latestAccumulatedAnswerText) {
+            print("😈 The answer asks something, so its actions wait for the reply")
+            actionsToPerform = []
+        }
+        if actionsToPerform.count < actionTags.count {
+            print("😈 Doing \(actionsToPerform.count) of the answer's \(actionTags.count) action tags")
+        }
+        guard !actionsToPerform.isEmpty else {
+            if isDevilModeDriving {
+                print("😈 Devil mode run finished")
+                endDevilModeRun()
+            }
+            return
+        }
+
+        startDevilModeRunIfNeeded()
+        let screenCapturesForActions = answerScreenCaptures
+        let screenTextRecognitionTaskForActions = answerScreenTextRecognitionTask
+        devilModeActionTask?.cancel()
+        devilModeActionTask = Task { [weak self] in
+            await self?.performDevilModeActions(
+                actionsToPerform,
+                screenCaptures: screenCapturesForActions,
+                screenTextRecognitionTask: screenTextRecognitionTaskForActions,
+                isApprovedByUser: isApprovedByUser
+            )
+        }
+    }
+
+    private func startDevilModeRunIfNeeded() {
+        guard !isDevilModeDriving else { return }
+        print("😈 Devil mode run started, up to \(devilModeStepBudget.stepsRemaining) steps")
+        isDevilModeDriving = true
+        // The overlay must never catch the mouse while Mose clicks through it
+        setAcceptingUserInk(false)
+        transientHideTask?.cancel()
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+        devilModeTakeoverMonitor.onUserTookOver = { [weak self] takeoverReason in
+            MainActor.assumeIsolated {
+                self?.handleDevilModeTakeover(takeoverReason)
+            }
+        }
+        devilModeTakeoverMonitor.start()
+    }
+
+    /// Stops any action in progress, stops watching for the user and takes
+    /// the note down. A "should I…?" waiting for its answer stays.
+    private func endDevilModeRun() {
+        devilModeActionTask?.cancel()
+        devilModeActionTask = nil
+        devilModeTakeoverMonitor.stop()
+        devilModeCurrentActionDescription = nil
+        devilModeStepBudget.reset()
+        guard isDevilModeDriving else { return }
+        isDevilModeDriving = false
+        scheduleTransientHideIfNeeded()
+    }
+
+    /// The talk or dictation keys went down: the user is taking over by
+    /// voice, so stop without saying anything into their recording.
+    private func stopDevilModeRunForTalking() {
+        guard isDevilModeDriving else { return }
+        print("😈 Devil mode stopped: the user is talking")
+        endDevilModeRun()
+    }
+
+    /// Esc, or the user's own mouse: everything stops at once.
+    private func handleDevilModeTakeover(_ takeoverReason: DevilModeTakeoverMonitor.TakeoverReason) {
+        guard isDevilModeDriving else { return }
+        print("😈 Devil mode stopped: the user \(takeoverReason.rawValue)")
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        sentenceSpeaker.stopSpeaking()
+        cancelVisualSequence()
+        endDevilModeRun()
+        if voiceState == .processing || voiceState == .responding {
+            voiceState = .idle
+        }
+        speakConversationConfirmation("Stopped.")
+    }
+
+    /// The user's next push-to-talk after "should I…?" is their answer: a yes
+    /// has Claude look again and do it (approved, so it isn't asked twice), a
+    /// no drops it, and anything else is a new request. A yes to a question
+    /// Claude asked itself ("should i send it?") lets the next answer's risky
+    /// step through too. Returns whether the transcript was used up here.
+    private func handleDevilModeConfirmationReply(_ transcript: String) -> Bool {
+        // An approval only ever covers the answer right after the yes
+        isNextDevilModeAnswerApprovedByUser = false
+        let confirmationReply = DevilModeConfirmationReply.classify(transcript)
+        if let devilModeQuestionAwaitingAnswer {
+            self.devilModeQuestionAwaitingAnswer = nil
+            switch confirmationReply {
+            case .yes:
+                print("😈 Yes to \"\(devilModeQuestionAwaitingAnswer)\"")
+                isNextDevilModeAnswerApprovedByUser = true
+                sendTranscriptToClaudeWithScreenshot(transcript: DevilModeFollowUp.transcript(afterApprovalOf: devilModeQuestionAwaitingAnswer))
+                return true
+            case .no:
+                print("😈 No to \"\(devilModeQuestionAwaitingAnswer)\"")
+                speakConversationConfirmation("Okay, I won't.")
+                return true
+            case .somethingElse:
+                return false
+            }
+        }
+        // Only a question about something risky ("should i send it?"), so a
+        // yes to "want me to fill it in first?" can't wave a send through
+        if isDevilModeEnabled, confirmationReply == .yes,
+           let lastAnswer = conversationStore.currentSession?.exchanges.last?.assistantResponse,
+           DevilModeSafetyCheck.isQuestionAboutARiskyAction(ConversationContext.spokenText(of: lastAnswer)) {
+            print("😈 Yes to Claude's question: its next step may go ahead")
+            isNextDevilModeAnswerApprovedByUser = true
+        }
+        return false
+    }
+
+    /// One step: for each action, checks it's allowed, flies the cursor to
+    /// it, does it; then waits for the app, looks again and asks Claude for
+    /// the next step.
+    private func performDevilModeActions(
+        _ actionsToPerform: [DevilModeAction],
+        screenCaptures: [CompanionScreenCapture],
+        screenTextRecognitionTask: Task<[[RecognizedScreenTextLine]], Never>?,
+        isApprovedByUser: Bool
+    ) async {
+        let recognizedTextLinesByCaptureIndex = await screenTextRecognitionTask?.value ?? []
+        var performedActions: [DevilModeAction] = []
+
+        for action in actionsToPerform {
+            guard !Task.isCancelled, isDevilModeDriving else { return }
+
+            var resolvedTarget: DevilModeResolvedTarget?
+            if action.isPointerAction {
+                guard let pointerTarget = resolveDevilModeTarget(
+                    for: action,
+                    screenCaptures: screenCaptures,
+                    recognizedTextLinesByCaptureIndex: recognizedTextLinesByCaptureIndex
+                ) else {
+                    stopDevilModeRunWithNotice("I couldn't tell where that is on the screen.")
+                    return
+                }
+                guard !DevilModeScreenInspector.isOwnWindow(
+                    atQuartzPoint: pointerTarget.quartzPoint,
+                    overlayWindowNumbers: overlayWindowManager.overlayWindowNumbers
+                ) else {
+                    stopDevilModeRunWithNotice("That's in one of my own windows, so I'll leave it to you.")
+                    return
+                }
+                resolvedTarget = pointerTarget
+            } else {
+                guard !DevilModeScreenInspector.isMoseFrontmost() else {
+                    stopDevilModeRunWithNotice("My own window has the keyboard, so I'll leave that to you.")
+                    return
+                }
+                if case .typeText = action, DevilModeScreenInspector.isSecureTextInputOn() {
+                    stopDevilModeRunWithNotice("That's a password field, so I won't type there.")
+                    return
+                }
+            }
+
+            if let appOutsideTheTestFence = appOutsideDevilModeTestFence(pointerTarget: resolvedTarget) {
+                stopDevilModeRunWithNotice("That's in \(appOutsideTheTestFence), outside the practice window, so I won't touch it.")
+                return
+            }
+
+            // Anything that can't be taken back waits for the user's yes
+            // The front app and its window title only matter for keys (return
+            // sends in a chat), so they're only looked at then
+            let appContextForKeys: DevilModeAppContext
+            if case .pressKeys = action {
+                appContextForKeys = DevilModeScreenInspector.frontmostAppContext()
+            } else {
+                appContextForKeys = DevilModeAppContext(bundleIdentifier: nil, appName: nil, windowTitle: nil)
+            }
+            if !isApprovedByUser,
+               let confirmationQuestion = DevilModeSafetyCheck.confirmationQuestion(
+                for: action,
+                appContext: appContextForKeys,
+                textUnderTarget: resolvedTarget?.textUnderTarget
+               ) {
+                print("😈 Asking first: \(confirmationQuestion)")
+                devilModeQuestionAwaitingAnswer = confirmationQuestion
+                stopDevilModeRunWithNotice(confirmationQuestion)
+                return
+            }
+
+            if let resolvedTarget {
+                await showDevilModeTargetBeat(resolvedTarget, bubbleText: action.progressiveDescription.lowercased())
+                guard !Task.isCancelled, isDevilModeDriving else { return }
+            }
+            devilModeCurrentActionDescription = action.progressiveDescription
+            print("😈 \(action.progressiveDescription)")
+            do {
+                try await performDevilModeAction(action, at: resolvedTarget)
+            } catch {
+                // Stopped halfway (the user took over)
+                return
+            }
+            performedActions.append(action)
+        }
+
+        // Let the app react, then look again
+        try? await Task.sleep(nanoseconds: UInt64(Self.devilModeScreenSettleDelaySeconds * 1_000_000_000))
+        guard !Task.isCancelled, isDevilModeDriving else { return }
+        devilModeCurrentActionDescription = "Looking at the screen"
+        clearDetectedElementLocation()
+        guard devilModeStepBudget.useOneStep() else {
+            stopDevilModeRunWithNotice("That's as many steps as I take on my own, so I'll stop here. Tell me if you want me to keep going.")
+            return
+        }
+        // Let the answer finish being said before asking for the next one
+        while sentenceSpeaker.isSpeaking {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard !Task.isCancelled, isDevilModeDriving else { return }
+        }
+        print("😈 Next step, \(devilModeStepBudget.stepsRemaining) left")
+        sendTranscriptToClaudeWithScreenshot(transcript: DevilModeFollowUp.transcript(afterPerforming: performedActions))
+    }
+
+    /// In a live test (debug builds with CLICKY_DEVIL_ONLY_IN_APP), the name
+    /// of the app an action would reach when it isn't the allowed one: the
+    /// window under a click, or the frontmost app for typing and keys.
+    private func appOutsideDevilModeTestFence(pointerTarget: DevilModeResolvedTarget?) -> String? {
+        #if DEBUG
+        guard let onlyAllowedAppName = Self.devilModeOnlyAllowedAppNameForTests else { return nil }
+        let reachedAppName: String?
+        if let pointerTarget {
+            reachedAppName = DevilModeScreenInspector.ownerNameOfWindow(
+                atQuartzPoint: pointerTarget.quartzPoint,
+                overlayWindowNumbers: overlayWindowManager.overlayWindowNumbers
+            )
+        } else {
+            reachedAppName = NSWorkspace.shared.frontmostApplication?.localizedName
+        }
+        guard reachedAppName != onlyAllowedAppName else { return nil }
+        return reachedAppName ?? "an unknown app"
+        #else
+        return nil
+        #endif
+    }
+
+    private func performDevilModeAction(_ action: DevilModeAction, at resolvedTarget: DevilModeResolvedTarget?) async throws {
+        overlayWindowManager.setAcceptsMouseInput(false)
+        switch action {
+        case .click(let clickKind, _, _, _):
+            guard let resolvedTarget else { return }
+            try await DevilModeEventPoster.click(clickKind, at: resolvedTarget.quartzPoint)
+        case .drag:
+            guard let resolvedTarget, let quartzEndPoint = resolvedTarget.quartzEndPoint else { return }
+            try await DevilModeEventPoster.drag(from: resolvedTarget.quartzPoint, to: quartzEndPoint)
+        case .scroll(_, let lineCount, _):
+            guard let resolvedTarget else { return }
+            try await DevilModeEventPoster.scroll(at: resolvedTarget.quartzPoint, lineCount: lineCount)
+        case .typeText(let typedText):
+            try await DevilModeEventPoster.type(typedText)
+        case .pressKeys(let keyShortcut):
+            try await DevilModeEventPoster.pressKeys(keyShortcut)
+        }
+    }
+
+    /// Converts a click, drag or scroll from screenshot pixels to the screen,
+    /// snapping a click onto the text its label names when Claude's box
+    /// clearly missed it (as targets are). Nil for typing and keys.
+    private func resolveDevilModeTarget(
+        for action: DevilModeAction,
+        screenCaptures: [CompanionScreenCapture],
+        recognizedTextLinesByCaptureIndex: [[RecognizedScreenTextLine]]
+    ) -> DevilModeResolvedTarget? {
+        // Only the mouse's screen is captured. A click on a screen Claude
+        // never saw would land somewhere else, so it's refused, not moved.
+        if let screenNumber = action.screenNumber, !(1...screenCaptures.count).contains(screenNumber) {
+            print("😈 No screen \(screenNumber) was captured")
+            return nil
+        }
+        let targetCaptureIndex: Int? = {
+            if let screenNumber = action.screenNumber {
+                return screenNumber - 1
+            }
+            return screenCaptures.firstIndex(where: { $0.isCursorScreen })
+        }()
+        guard let targetCaptureIndex, let primaryScreenHeight = NSScreen.screens.first?.frame.height else { return nil }
+        let targetScreenCapture = screenCaptures[targetCaptureIndex]
+        let recognizedTextLines = recognizedTextLinesByCaptureIndex.indices.contains(targetCaptureIndex)
+            ? recognizedTextLinesByCaptureIndex[targetCaptureIndex]
+            : []
+        func quartzPoint(forAppKitGlobalPoint appKitGlobalPoint: CGPoint) -> CGPoint {
+            DevilModeScreenCoordinates.quartzGlobalPoint(fromAppKitGlobalPoint: appKitGlobalPoint, primaryScreenHeight: primaryScreenHeight)
+        }
+
+        switch action {
+        case .click(_, let proposedScreenshotRect, let label, _):
+            var targetScreenshotRect = proposedScreenshotRect
+            if let correctedTargetRect = ScreenSketchTargetSnapper.correctedTargetRect(
+                forLabel: label,
+                proposedRect: proposedScreenshotRect,
+                recognizedTextLines: recognizedTextLines
+            ) {
+                print("🧲 Snapped the click on \"\(label ?? "")\" from \(proposedScreenshotRect.integral) to \(correctedTargetRect.integral)")
+                targetScreenshotRect = correctedTargetRect
+            }
+            let targetGlobalRect = Self.globalScreenRect(forScreenshotRect: targetScreenshotRect, in: targetScreenCapture)
+            let clickGlobalPoint = CGPoint(x: targetGlobalRect.midX, y: targetGlobalRect.midY)
+            let textUnderTarget = recognizedTextLines
+                .filter { $0.screenshotRect.intersects(targetScreenshotRect) }
+                .map(\.text)
+                .joined(separator: " ")
+            return DevilModeResolvedTarget(
+                appKitGlobalPoint: clickGlobalPoint,
+                quartzPoint: quartzPoint(forAppKitGlobalPoint: clickGlobalPoint),
+                quartzEndPoint: nil,
+                displayFrame: targetScreenCapture.displayFrame,
+                textUnderTarget: textUnderTarget.isEmpty ? nil : textUnderTarget
+            )
+        case .drag(let fromScreenshotPoint, let toScreenshotPoint, _, _):
+            let dragStartGlobalPoint = Self.globalScreenLocation(forScreenshotCoordinate: fromScreenshotPoint, in: targetScreenCapture)
+            let dragEndGlobalPoint = Self.globalScreenLocation(forScreenshotCoordinate: toScreenshotPoint, in: targetScreenCapture)
+            return DevilModeResolvedTarget(
+                appKitGlobalPoint: dragStartGlobalPoint,
+                quartzPoint: quartzPoint(forAppKitGlobalPoint: dragStartGlobalPoint),
+                quartzEndPoint: quartzPoint(forAppKitGlobalPoint: dragEndGlobalPoint),
+                displayFrame: targetScreenCapture.displayFrame,
+                textUnderTarget: nil
+            )
+        case .scroll(let scrollScreenshotPoint, _, _):
+            let scrollGlobalPoint = Self.globalScreenLocation(forScreenshotCoordinate: scrollScreenshotPoint, in: targetScreenCapture)
+            return DevilModeResolvedTarget(
+                appKitGlobalPoint: scrollGlobalPoint,
+                quartzPoint: quartzPoint(forAppKitGlobalPoint: scrollGlobalPoint),
+                quartzEndPoint: nil,
+                displayFrame: targetScreenCapture.displayFrame,
+                textUnderTarget: nil
+            )
+        case .typeText, .pressKeys:
+            return nil
+        }
+    }
+
+    /// Flies the blue cursor to where the action will happen, with a bubble
+    /// saying what it is, and waits for it to land, so the user sees what
+    /// Mose is about to do before it happens.
+    private func showDevilModeTargetBeat(_ resolvedTarget: DevilModeResolvedTarget, bubbleText: String) async {
+        clearDetectedElementLocation()
+        // The spinner hides the triangle; switch away from it so the flight is visible
+        if voiceState == .processing {
+            voiceState = .idle
+        }
+        let mouseLocation = NSEvent.mouseLocation
+        let flightDistance = hypot(resolvedTarget.appKitGlobalPoint.x - mouseLocation.x, resolvedTarget.appKitGlobalPoint.y - mouseLocation.y)
+        // BlueCursorView flies for distance / 800 seconds, kept between 0.6 and 1.4
+        let flightSeconds = min(max(flightDistance / 800, 0.6), 1.4)
+        detectedElementBubbleText = bubbleText
+        detectedElementDisplayFrame = resolvedTarget.displayFrame
+        detectedElementScreenLocation = resolvedTarget.appKitGlobalPoint
+        // A moment longer for the bubble to be read
+        try? await Task.sleep(nanoseconds: UInt64((flightSeconds + 0.5) * 1_000_000_000))
+    }
+
+    /// Ends the run and says why, once the answer being spoken is done.
+    private func stopDevilModeRunWithNotice(_ noticeText: String) {
+        print("😈 \(noticeText)")
+        endDevilModeRun()
+        clearDetectedElementLocation()
+        Task { [weak self] in
+            while let self, self.sentenceSpeaker.isSpeaking {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            self?.agentAnnouncementSpeaker.enqueueSentence(noticeText, sentenceIndex: 0)
+            self?.scheduleTransientHideIfNeeded()
+        }
+    }
+
     func stop() {
+        endDevilModeRun()
         chatBackend.shutDown()
         backgroundAgentJobService.stopAllRunningJobs()
         globalPushToTalkShortcutMonitor.stop()
@@ -1345,6 +1823,7 @@ final class CompanionManager: ObservableObject {
             currentResponseTask?.cancel()
             sentenceSpeaker.stopSpeaking()
             cancelVisualSequence()
+            stopDevilModeRunForTalking()
 
             // Show the waveform at the cursor while listening
             if !isClickyCursorEnabled && !isOverlayVisible {
@@ -1407,6 +1886,7 @@ final class CompanionManager: ObservableObject {
             sentenceSpeaker.stopSpeaking()
             cancelVisualSequence()
             resetGuidedSteps()
+            stopDevilModeRunForTalking()
             clearUserInk()
             setAcceptingUserInk(true)
 
@@ -1462,7 +1942,7 @@ final class CompanionManager: ObservableObject {
     - never say "simply" or "just".
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
     - no wrap-ups, bonus tips or offers at the end, and no yes/no questions like "want me to explain more?". stop as soon as the question is answered.
-    - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
+    - you only see the screen their mouse pointer is on. if they ask about something on another display, ask them to move the pointer there and ask again.
 
     conversations:
     you remember this conversation. when it's long, its start comes to you as a short summary. if they ask to start over or to forget what you talked about, in any words, say a few words like "okay, fresh start." and add [SESSION:new]. don't add it just because they changed the subject.
@@ -1489,7 +1969,7 @@ final class CompanionManager: ObservableObject {
     - [DRAW:check x,y] a check mark next to something that's right. green by default.
     - [DRAW:path x1,y1,x2,y2,x3,y3,...] a freehand line through the points, for showing a drag or a gesture.
     - [DRAW:text x,y label="..."] a short handwritten note whose left edge starts at (x,y). put it in empty space.
-    optional on any of them: color=blue|red|green|yellow|orange|purple (blue is the default, use red for problems and green for what's right), and screen=N when it's on another screen (N from the image labels; without it the mark lands on the cursor's screen).
+    optional on any of them: color=blue|red|green|yellow|orange|purple (blue is the default, use red for problems and green for what's right).
 
     how to use them:
     - put each tag right after the sentence it goes with. they're shown in order as you say each sentence.
@@ -1505,6 +1985,19 @@ final class CompanionManager: ObservableObject {
     guided steps:
     when they want help doing something on screen that takes a few clicks, walk them through it one step at a time. say only the very next step in one short sentence and mark the exact thing to click with [DRAW:target x1,y1,x2,y2 label="..."], a tight box around it like a circle. one click per answer: never fold two clicks into one sentence, like "open system settings from the apple menu" or "go to file, then export". if it's inside a menu or panel that isn't open, the step is opening it. as soon as they click, you automatically get a fresh screenshot and a message like "(guided step) i clicked export. what's next?", and you give the next step the same way. if they clicked somewhere else, look at the new screen and get them back on track. if the next step isn't a click (typing, dragging, a keyboard shortcut), say it plainly without a target and they'll tell you when they're ready. when the task is done, say so in a few words and don't add a target. at most one target per answer; you can still add other marks to explain.
 
+    doing it for them (devil mode):
+    the notes before the conversation say whether devil mode is on. when it's off, never use the action tags below. when it's on and they ask you to do something for them ("do it for me", "go ahead and export this", "open settings for me", "can you rename this"), you do it yourself, one step at a time: say what you're doing in a few words, like "opening the apple menu.", and add the action tag. right after it's done you automatically get a fresh screenshot and a message like "(devil step) you clicked apple menu. what's next?", and you do the next step the same way. when the task is done, say so in a few words with no action tag. if they only ask how to do something, show them with guided steps instead, even when devil mode is on.
+    - [CLICK:x1,y1,x2,y2 label="..."] clicks the middle of that box. fit it tightly around the thing, like a target. [DOUBLECLICK:x1,y1,x2,y2 label="..."] and [RIGHTCLICK:x1,y1,x2,y2 label="..."] work the same way.
+    - [DRAG:x1,y1,x2,y2 label="..."] presses at (x1,y1), drags to (x2,y2) and lets go.
+    - [SCROLL:x,y,lines] scrolls whatever is under (x,y). positive lines go down, negative go up, about five is a good amount.
+    - [TYPE:the text] types into whatever has keyboard focus. click the field first if it isn't focused. no square brackets inside.
+    - [KEY:cmd+s] presses a key or shortcut: return, tab, escape, delete, space, up, down, left, right, f1 to f12, letters, with cmd, shift, option or ctrl joined by plus.
+    - coordinates work exactly like draw tags. labels are one to three words naming the thing, the way it's written on screen.
+    - one click, drag or scroll per answer, and it comes first. a TYPE or KEY can follow it in the same answer, like clicking a search field and typing into it, but never two clicks: after the first one the screen has changed.
+    - only act on what you can see in the screenshot right now. if it's inside a menu that isn't open, open the menu first.
+    - before anything that sends, posts, buys, pays, deletes, submits, publishes, shares or invites, including pressing return in a chat or mail app, stop and ask in a few words, like "should i send it?", with no action tag, and only do it once they say yes. always ask, even when the screen says it's only a test, a practice or a draft: you can't know that for sure.
+    - never type passwords, codes or card numbers, and never act inside mose's own windows: ask them to do that part.
+
     examples:
     - user asks how to color grade in final cut: "open the color inspector with this button up in the toolbar. [DRAW:target 1086,30,1114,54 label="color inspector"]"
     - user asks where their downloads went: "they're in this downloads folder in the sidebar. [DRAW:circle 20,310,130,330 label="downloads"]"
@@ -1512,9 +2005,11 @@ final class CompanionManager: ObservableObject {
     - user asks how to export their project: "first click your project down here to select it. [DRAW:target 150,628,290,652 label="your project"]" then, after "(guided step) i clicked your project. what's next?": "now hit share in the top right corner. [DRAW:target 1160,36,1192,60 label="share"]"
     - user asks you to research standing desks under 500 dollars and make a one page pdf of the top three: "on it, i'll put a comparison together in the background and tell you when it's ready. [AGENT:standing desk comparison|research standing desks under 500 us dollars that are well reviewed in 2026, pick the top three, and make a clean one page pdf comparing price, height range, weight capacity, warranty and standout pros and cons, with links to where to buy each. save it as output/standing-desks.pdf.]"
     - user asks why their formula is broken: "this cell points at the wrong column. [DRAW:cross 402,310,470,330] it should use column c instead. [DRAW:arrow 600,250,520,318 label="use column c"]"
-    - element is on screen 2 (not where cursor is): "that's on your other monitor, the terminal window. [POINT:400,300:terminal:screen2]"
     - user asks how to export their document as a pdf: "click file up in the menu bar. [DRAW:target 62,4,92,22 label="file"]" then, after "(guided step) i clicked file. what's next?": "now pick export as pdf near the bottom of the menu. [DRAW:target 70,410,190,430 label="export as pdf"]"
     - user asks how to open system settings: "click the apple logo in the top left corner. [DRAW:target 8,2,34,24 label="apple menu"]" then, after "(guided step) i clicked apple menu. what's next?": "now pick system settings. [DRAW:target 20,90,170,110 label="system settings"]"
+    - devil mode is on and they say "open system settings for me": "opening the apple menu. [CLICK:8,2,34,24 label="apple menu"]" then, after "(devil step) you clicked apple menu. what's next?": "and system settings. [CLICK:20,90,170,110 label="system settings"]" then, after "(devil step) you clicked system settings. what's next?": "there you go, system settings is open."
+    - devil mode is on and they say "search for flights to lisbon": "typing it into the search box. [CLICK:400,120,880,150 label="search"] [TYPE:flights to lisbon] [KEY:return]"
+    - devil mode is on and they say "send this to sam": they've written the message, so "it's ready, should i send it to sam?" and only after they say yes: "sending. [CLICK:1180,640,1240,670 label="send"]"
     """
 
     // MARK: - AI Response Pipeline
@@ -1530,6 +2025,10 @@ final class CompanionManager: ObservableObject {
         if conversationStore.isCurrentSessionIdle(at: Date(), idleLimitSeconds: Self.conversationIdleLimitSeconds) {
             print("🧠 Quiet for a while: starting a new conversation")
             conversationStore.startNewSession()
+        }
+
+        if handleDevilModeConfirmationReply(transcript) {
+            return
         }
 
         switch ConversationVoiceCommand.parse(transcript) {
@@ -1606,6 +2105,7 @@ final class CompanionManager: ObservableObject {
             AgentConnectedApps.noteForVoiceAnswers(
                 appDisplayNames: agentConnectedAppServerNames.map(AgentConnectedApps.displayName(forServerName:))
             ),
+            DevilModeFollowUp.noteForClaude(isDevilModeEnabled: isDevilModeEnabled),
         ].compactMap { $0 }
         return noteParts.isEmpty ? nil : noteParts.joined(separator: "\n\n")
     }
@@ -1738,8 +2238,8 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
-                // Capture all connected screens so the AI has full context
-                var screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                // Only the screen the mouse is on: Mose sees as little as it can
+                var screenCaptures = try await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG()
 
                 // The overlay isn't in screenshots, so draw the user's own marks in
                 let didUserDrawOnScreen = !userInkStrokes.isEmpty
@@ -1813,7 +2313,7 @@ final class CompanionManager: ObservableObject {
                         askedAt: screenCaptureDate,
                         userTranscript: transcript,
                         assistantResponse: fullResponseText,
-                        isGuidedStepFollowUp: transcript.hasPrefix("(guided step)"),
+                        isGuidedStepFollowUp: transcript.hasPrefix("(guided step)") || DevilModeFollowUp.isDevilStepTranscript(transcript),
                         frontmostAppName: frontmostAppNameWhenAsked
                     ))
                     print("🧠 Conversation \"\(updatedConversation.title)\": \(updatedConversation.exchanges.count) exchanges")
@@ -1824,12 +2324,14 @@ final class CompanionManager: ObservableObject {
                 if answerNeedsItsMissingTargetMarked {
                     askForTheMissingGuidedTarget()
                 }
+                continueDevilModeRunAfterAnswer()
                 ClickyAnalytics.trackAIResponseReceived(response: ClaudeVisualTagParser.parseVisualBeats(from: fullResponseText).spokenText)
             } catch where Self.isCancellation(error) {
                 // User spoke again (or clicked a guided step) — response was interrupted
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
+                endDevilModeRun()
                 speakAnswerFailure(error)
             }
 
@@ -1852,7 +2354,7 @@ final class CompanionManager: ObservableObject {
         _ resolvedVisualBeats: [ResolvedVisualBeat],
         screenCaptures: [CompanionScreenCapture]
     ) async -> [ResolvedVisualBeat] {
-        guard let freshScreenCaptures = try? await CompanionScreenCaptureUtility.captureAllScreensAsJPEG() else {
+        guard let freshScreenCaptures = try? await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG() else {
             print("🚫 Not drawing: the screen changed and couldn't be checked again")
             return []
         }
@@ -2023,7 +2525,8 @@ final class CompanionManager: ObservableObject {
     /// fades out the overlay after a 1-second pause. Cancelled automatically
     /// if the user starts another push-to-talk interaction.
     private func scheduleTransientHideIfNeeded() {
-        guard !isClickyCursorEnabled && isOverlayVisible else { return }
+        // The cursor stays up for a whole devil mode run; its end schedules the hide
+        guard !isClickyCursorEnabled && isOverlayVisible && !isDevilModeDriving else { return }
 
         transientHideTask?.cancel()
         transientHideTask = Task {
@@ -2042,7 +2545,7 @@ final class CompanionManager: ObservableObject {
 
             // Pause 1s after everything finishes, then fade out
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, !isDevilModeDriving else { return }
             overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
         }
@@ -2253,6 +2756,7 @@ final class CompanionManager: ObservableObject {
     ///   com.clicky.debug.dictate   userInfo["text"]: type it into the focused field as dictation
     ///   com.clicky.debug.ink       userInfo["points"]: "x,y x,y ...": the user's ink, as if drawn
     ///   com.clicky.debug.clear     cancel the walkthrough and wipe drawings
+    ///   com.clicky.debug.devil     userInfo["enabled"]: "1" or "0", devil mode on or off
     /// Only active in debug builds launched with CLICKY_DEBUG_AUTOMATION=1:
     /// the snapshot hook would otherwise let any local process capture the
     /// screen through Clicky's Screen Recording permission.
@@ -2265,7 +2769,16 @@ final class CompanionManager: ObservableObject {
             Task { @MainActor in
                 print("🧪 Debug ask: \(transcript)")
                 self?.resetGuidedSteps()
+                self?.stopDevilModeRunForTalking()
                 self?.handleUserTranscript(transcript)
+            }
+        }
+        // Turns devil mode on or off: userInfo["enabled"] = "1" or "0"
+        distributedNotificationCenter.addObserver(forName: Notification.Name("com.clicky.debug.devil"), object: nil, queue: .main) { [weak self] notification in
+            let isEnabled = notification.userInfo?["enabled"] as? String == "1"
+            Task { @MainActor in
+                print("🧪 Debug devil mode: \(isEnabled ? "on" : "off")")
+                self?.setDevilModeEnabled(isEnabled)
             }
         }
         distributedNotificationCenter.addObserver(forName: Notification.Name("com.clicky.debug.present"), object: nil, queue: .main) { [weak self] notification in
@@ -2332,7 +2845,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = Task {
             voiceState = .processing
             do {
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureCursorScreenAsJPEG()
                 guard !Task.isCancelled else { return }
                 mouseLocationWhenScreenshotWasTaken = NSEvent.mouseLocation
                 beginStreamingAnswer(
@@ -2345,6 +2858,7 @@ final class CompanionManager: ObservableObject {
                 if answerNeedsItsMissingTargetMarked {
                     askForTheMissingGuidedTarget()
                 }
+                continueDevilModeRunAfterAnswer()
             } catch {
                 print("⚠️ Debug present failed: \(error)")
             }

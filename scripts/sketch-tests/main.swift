@@ -570,6 +570,18 @@ do {
     check(agentArguments.contains("dontAsk") && agentArguments.contains(BackgroundAgentJobRunner.sandboxSettingsJSON), "agents never ask and run sandboxed")
     check(!agentArguments.contains(where: { $0.contains("research") }), "the brief isn't passed as an argument")
     check(BackgroundAgentJobRunner.disallowedTools.contains("Read(~/.ssh/**)") && BackgroundAgentJobRunner.allowedTools.contains("Write(./**)"), "agents can't read credentials and only write in their folder")
+    check(agentArguments.contains("--no-session-persistence") && BackgroundAgentJobRunner.claudeArguments(connectedAppServerNames: ["invoices"]).contains("--no-session-persistence"), "Claude Code doesn't keep background task sessions")
+    check(ClaudeCodeChatClient.claudeArguments(modelAlias: "sonnet", systemPrompt: "x", isExtendedThinkingEnabled: false).contains("--no-session-persistence"), "nor voice answers")
+
+    let jobFolderForScreenshotTest = FileManager.default.temporaryDirectory.appendingPathComponent("job-screenshot-test-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: jobFolderForScreenshotTest.appendingPathComponent("tmp"), withIntermediateDirectories: true)
+    try? Data([0xFF, 0xD8]).write(to: jobFolderForScreenshotTest.appendingPathComponent("tmp/screen.jpg"))
+    try? "keep me".write(to: jobFolderForScreenshotTest.appendingPathComponent("tmp/notes.txt"), atomically: true, encoding: .utf8)
+    BackgroundAgentJobRunner.removeScreenshot(fromJobFolderPath: jobFolderForScreenshotTest.path)
+    check(!FileManager.default.fileExists(atPath: jobFolderForScreenshotTest.appendingPathComponent("tmp/screen.jpg").path)
+          && FileManager.default.fileExists(atPath: jobFolderForScreenshotTest.appendingPathComponent("tmp/notes.txt").path), "a finished task's screenshot is deleted, its other files stay")
+    BackgroundAgentJobRunner.removeScreenshot(fromJobFolderPath: jobFolderForScreenshotTest.path)
+    try? FileManager.default.removeItem(at: jobFolderForScreenshotTest)
 
     let savedByNodeBridge = #"{"id":"ab12cd34","title":"t","brief":"b","folder":"/tmp/x","status":"done","startedAt":"2026-10-27T10:00:00.000Z","finishedAt":null,"progress":[{"at":"2026-10-27T10:00:01.000Z","text":"writing a.txt"}],"result":"Done.","outputFiles":["a.txt"],"wasStopRequested":false}"#
     let decodedJobRecord = try? JSONDecoder().decode(BackgroundAgentJobRecord.self, from: Data(savedByNodeBridge.utf8))
@@ -985,6 +997,197 @@ do {
     let decodedMessage = (try? JSONSerialization.jsonObject(with: Data(messageWithMemory.utf8))) as? [String: Any]
     let contentBlocks = ((decodedMessage?["message"] as? [String: Any])?["content"] as? [[String: Any]]) ?? []
     check((contentBlocks.first?["text"] as? String)?.hasPrefix("what you remember about them") == true && (contentBlocks.last?["text"] as? String) == "hi", "the memory note goes first in the user message, the question last")
+}
+
+// MARK: Devil mode — action tags
+do {
+    check(DevilModeActionTagParser.parseActionTag(#"[CLICK:62,4,92,22 label="file"]"#) == .click(kind: .click, screenshotRect: CGRect(x: 62, y: 4, width: 30, height: 18), label: "file", screenNumber: nil), "CLICK reads a box and a label")
+    check(DevilModeActionTagParser.parseActionTag(#"[CLICK:92,22,62,4 label="file"]"#) == .click(kind: .click, screenshotRect: CGRect(x: 62, y: 4, width: 30, height: 18), label: "file", screenNumber: nil), "CLICK corners in either order")
+    check(DevilModeActionTagParser.parseActionTag(#"[DOUBLECLICK:10,10,50,30 label="report.pdf"]"#) == .click(kind: .doubleClick, screenshotRect: CGRect(x: 10, y: 10, width: 40, height: 20), label: "report.pdf", screenNumber: nil), "DOUBLECLICK")
+    check(DevilModeActionTagParser.parseActionTag(#"[RIGHTCLICK:10,10,50,30 label="desktop" screen=2]"#) == .click(kind: .rightClick, screenshotRect: CGRect(x: 10, y: 10, width: 40, height: 20), label: "desktop", screenNumber: 2), "RIGHTCLICK with a screen")
+    check(DevilModeActionTagParser.parseActionTag(#"[double-click:10,10,50,30]"#) == .click(kind: .doubleClick, screenshotRect: CGRect(x: 10, y: 10, width: 40, height: 20), label: nil, screenNumber: nil), "double-click spelled with a dash, in lowercase")
+    check(DevilModeActionTagParser.parseActionTag(#"[RIGHT_CLICK:10,10,50,30:screen3]"#)?.screenNumber == 3, "RIGHT_CLICK with a :screen3 suffix")
+    check(DevilModeActionTagParser.parseActionTag(#"[CLICK:120,40 label="ok"]"#) == .click(kind: .click, screenshotRect: CGRect(x: 108, y: 28, width: 24, height: 24), label: "ok", screenNumber: nil), "CLICK with only a point gets a small box around it")
+    check(DevilModeActionTagParser.parseActionTag(#"[CLICK:10,10,50,30 label="step 2 of 3"]"#)?.labelOrTypedText == "step 2 of 3", "digits in a click's label aren't coordinates")
+    check(DevilModeActionTagParser.parseActionTag("[CLICK:here]") == nil, "CLICK without numbers")
+    check(DevilModeActionTagParser.parseActionTag(#"[DRAG:100,200,400,260 label="photo to album"]"#) == .drag(fromScreenshotPoint: CGPoint(x: 100, y: 200), toScreenshotPoint: CGPoint(x: 400, y: 260), label: "photo to album", screenNumber: nil), "DRAG reads from, to and a label")
+    check(DevilModeActionTagParser.parseActionTag("[DRAG:100,200]") == nil, "DRAG needs an end")
+    check(DevilModeActionTagParser.parseActionTag("[SCROLL:400,300,5]") == .scroll(atScreenshotPoint: CGPoint(x: 400, y: 300), lineCount: 5, screenNumber: nil), "SCROLL down")
+    check(DevilModeActionTagParser.parseActionTag("[SCROLL:400,300,-3 screen=2]") == .scroll(atScreenshotPoint: CGPoint(x: 400, y: 300), lineCount: -3, screenNumber: 2), "SCROLL up on screen 2")
+    check(DevilModeActionTagParser.parseActionTag("[SCROLL:400,300,500]") == .scroll(atScreenshotPoint: CGPoint(x: 400, y: 300), lineCount: 30, screenNumber: nil), "SCROLL is capped")
+    check(DevilModeActionTagParser.parseActionTag("[SCROLL:400,300,0]") == nil && DevilModeActionTagParser.parseActionTag("[SCROLL:400,300]") == nil, "SCROLL needs a nonzero amount")
+    check(DevilModeActionTagParser.parseActionTag("[TYPE:flights to lisbon]") == .typeText("flights to lisbon"), "TYPE")
+    check(DevilModeActionTagParser.parseActionTag("[TYPE: meeting at 10:30, room 4 ]") == .typeText("meeting at 10:30, room 4"), "TYPE keeps colons and commas, trims the ends")
+    check(DevilModeActionTagParser.parseActionTag("[TYPE:   ]") == nil, "TYPE with nothing to type")
+    check(DevilModeActionTagParser.parseActionTag("[TYPE:" + String(repeating: "a", count: 2001) + "]") == nil, "TYPE that's far too long")
+    check(DevilModeActionTagParser.parseActionTag("[KEY:cmd+s]") == .pressKeys(DevilModeKeyShortcut(virtualKeyCode: 1, modifiers: .command, keyName: "s")), "KEY cmd+s")
+    check(DevilModeActionTagParser.parseActionTag("[KEY:nonsense]") == nil, "KEY with an unknown key")
+    check(DevilModeActionTagParser.parseActionTag("[POINT:1,2:x]") == nil && !DevilModeActionTagParser.isActionTag("[POINT:1,2:x]"), "POINT isn't an action")
+    for actionTag in ["[CLICK:1,2,3,4]", "[DOUBLECLICK:1,2,3,4]", "[RIGHTCLICK:1,2,3,4]", "[DRAG:1,2,3,4]", "[SCROLL:1,2,3]", "[TYPE:hi]", "[KEY:tab]", "[ click :1,2,3,4]"] {
+        check(DevilModeActionTagParser.isActionTag(actionTag) && StreamingAnswerSegmenter.isClickyTag(actionTag), "\(actionTag) is an action tag and a Clicky tag")
+    }
+    check(!StreamingAnswerSegmenter.isClickyTag("[clicks]") && !StreamingAnswerSegmenter.isClickyTag("[keyboard shortcut]"), "brackets without a colon aren't tags")
+    let parsedAnswerActions = DevilModeActionTagParser.parseActions(fromAnswerText: #"typing it in. [CLICK:400,120,880,150 label="search"] [TYPE:flights to lisbon] [KEY:return] [POINT:none]"#)
+    check(parsedAnswerActions.count == 3 && parsedAnswerActions[1] == .typeText("flights to lisbon") && parsedAnswerActions[2] == .pressKeys(DevilModeKeyShortcutParser.parse("return")!), "an answer's actions, in order, without the POINT")
+}
+
+// MARK: Devil mode — key shortcuts
+do {
+    let saveAs = DevilModeKeyShortcutParser.parse("cmd+shift+s")
+    check(saveAs?.virtualKeyCode == 1 && saveAs?.modifiers == [.command, .shift], "cmd+shift+s")
+    check(saveAs?.eventFlags.contains(.maskCommand) == true && saveAs?.eventFlags.contains(.maskShift) == true && saveAs?.eventFlags.contains(.maskControl) == false, "cmd+shift+s flags")
+    check(saveAs?.displayText == "shift+cmd+s", "display text puts modifiers in the usual order: \(saveAs?.displayText ?? "")")
+    check(DevilModeKeyShortcutParser.parse("return")?.virtualKeyCode == 36 && DevilModeKeyShortcutParser.parse("return")?.modifiers == [], "return")
+    check(DevilModeKeyShortcutParser.parse("Enter")?.isReturnKey == true && DevilModeKeyShortcutParser.parse("cmd+return")?.isReturnKey == true, "enter and cmd+return are return keys")
+    check(DevilModeKeyShortcutParser.parse("tab")?.virtualKeyCode == 48 && DevilModeKeyShortcutParser.parse("shift+tab")?.modifiers == .shift, "tab and shift+tab")
+    check(DevilModeKeyShortcutParser.parse("escape")?.virtualKeyCode == 53 && DevilModeKeyShortcutParser.parse("esc")?.virtualKeyCode == 53, "escape")
+    check(DevilModeKeyShortcutParser.parse("Command + ,")?.virtualKeyCode == 43 && DevilModeKeyShortcutParser.parse("Command + ,")?.modifiers == .command, "Command + , (settings)")
+    check(DevilModeKeyShortcutParser.parse("ctrl+option+left")?.virtualKeyCode == 123 && DevilModeKeyShortcutParser.parse("ctrl+option+left")?.modifiers == [.control, .option], "ctrl+option+left")
+    check(DevilModeKeyShortcutParser.parse("cmd s")?.virtualKeyCode == 1 && DevilModeKeyShortcutParser.parse("cmd s")?.modifiers == .command, "cmd s with a space")
+    check(DevilModeKeyShortcutParser.parse("page up")?.virtualKeyCode == 116, "page up is one key")
+    check(DevilModeKeyShortcutParser.parse("cmd++")?.virtualKeyCode == 24 && DevilModeKeyShortcutParser.parse("cmd++")?.modifiers == .command, "cmd++ (zoom in)")
+    check(DevilModeKeyShortcutParser.parse("cmd+-")?.virtualKeyCode == 27, "cmd+- (zoom out)")
+    check(DevilModeKeyShortcutParser.parse("F5")?.virtualKeyCode == 96 && DevilModeKeyShortcutParser.parse("cmd+space")?.virtualKeyCode == 49, "f5 and cmd+space")
+    check(DevilModeKeyShortcutParser.parse("⌘⇧N".lowercased()) == nil, "symbols run together aren't parsed")
+    check(DevilModeKeyShortcutParser.parse("⌘+⇧+n")?.modifiers == [.command, .shift], "symbols joined by plus")
+    check(DevilModeKeyShortcutParser.parse("cmd+shift") == nil, "modifiers without a key")
+    check(DevilModeKeyShortcutParser.parse("a+b") == nil, "two keys at once")
+    check(DevilModeKeyShortcutParser.parse("hyper+q") == nil, "an unknown modifier")
+    check(DevilModeKeyShortcutParser.parse("  ") == nil, "nothing")
+    check(DevilModeKeyShortcutParser.parse("fn+f11")?.eventFlags.contains(.maskSecondaryFn) == true, "fn")
+}
+
+// MARK: Devil mode — never spoken
+do {
+    let devilAnswer = #"opening the apple menu. [CLICK:8,2,34,24 label="apple menu"] then i'll pick settings."#
+    let expectedDevilPieces = ["S0:opening the apple menu.", #"T0:[CLICK:8,2,34,24 label="apple menu"]"#, "S1:then i'll pick settings."]
+    for chunkSize in [1, 3, 7, 400] {
+        check(streamAnswer(devilAnswer, chunkSize: chunkSize) == expectedDevilPieces, "a CLICK tag is pulled out of the speech in chunks of \(chunkSize): \(streamAnswer(devilAnswer, chunkSize: chunkSize))")
+    }
+    let typedAnswer = "typing it. [TYPE:hello. this is sam! see you at 3.5?] [KEY:return] done."
+    check(streamAnswer(typedAnswer, chunkSize: 4) == ["S0:typing it.", "T0:[TYPE:hello. this is sam! see you at 3.5?]", "T0:[KEY:return]", "S1:done."], "typed text is never spoken, even with sentence ends inside: \(streamAnswer(typedAnswer, chunkSize: 4))")
+    check(streamAnswer("[DRAG:1,2,3,4 label=\"file\"] [SCROLL:5,6,3] [DOUBLECLICK:1,2,3,4] [RIGHTCLICK:1,2,3,4] moved it.", chunkSize: 5).filter { $0.hasPrefix("S") } == ["S0:moved it."], "DRAG, SCROLL, DOUBLECLICK and RIGHTCLICK aren't spoken")
+    check(ConversationContext.spokenText(of: #"exporting it. [CLICK:1,2,3,4 label="export"] [TYPE:report] [KEY:cmd+s] [double-click:1,2,3,4]"#) == "exporting it.", "saved answers are shown without action tags")
+    check(GuidedStepCardDeck.cardText(fromAnswerText: #"opening it. [RIGHTCLICK:1,2,3,4 label="file"] [DRAG:1,2,3,4] [SCROLL:1,2,3]"#) == "Opening it.", "step cards leave action tags out")
+}
+
+// MARK: Devil mode — one step per answer
+do {
+    let clickField = DevilModeActionTagParser.parseActionTag(#"[CLICK:1,2,3,4 label="name"]"#)!
+    let secondClick = DevilModeActionTagParser.parseActionTag(#"[CLICK:5,6,7,8 label="save"]"#)!
+    let typeName = DevilModeAction.typeText("Ada")
+    let pressReturn = DevilModeAction.pressKeys(DevilModeKeyShortcutParser.parse("return")!)
+    check(DevilModeActionPlan.actionsToPerform([clickField, typeName, pressReturn]) == [clickField, typeName, pressReturn], "a click, then typing and a key, all go")
+    check(DevilModeActionPlan.actionsToPerform([clickField, secondClick]) == [clickField], "a second click waits for the next screenshot")
+    check(DevilModeActionPlan.actionsToPerform([typeName, clickField, typeName]) == [typeName], "a click after anything else waits")
+    check(DevilModeActionPlan.actionsToPerform(Array(repeating: pressReturn, count: 7)).count == DevilModeActionPlan.maximumActionsPerAnswer, "at most four actions per answer")
+    check(DevilModeActionPlan.actionsToPerform([]).isEmpty, "no actions, nothing to do")
+    check(DevilModeActionPlan.actionsToPerform(fromAnswerText: #"it's empty, should i still hit send? [CLICK:522,145,795,198 label="send message"]"#).isEmpty, "an answer that ends with a question doesn't act, even with a tag")
+    check(DevilModeActionPlan.actionsToPerform(fromAnswerText: #"typing it. [TYPE:are you free at 3?]"#) == [.typeText("are you free at 3?")], "a question mark inside typed text isn't the answer asking")
+    check(DevilModeActionPlan.actionsToPerform(fromAnswerText: #"want it as a pdf? exporting it now. [CLICK:1,2,3,4 label="export"]"#).count == 1, "a question earlier in the answer doesn't stop it")
+    check(DevilModeActionPlan.answerEndsWithAQuestion("should i send it?  [POINT:none]") && !DevilModeActionPlan.answerEndsWithAQuestion("sending. [CLICK:1,2,3,4]"), "an answer asks when its spoken text ends with a question mark")
+}
+
+// MARK: Devil mode — risky actions
+do {
+    let finder = DevilModeAppContext(bundleIdentifier: "com.apple.finder", appName: "Finder", windowTitle: "Downloads")
+    let messages = DevilModeAppContext(bundleIdentifier: "com.apple.MobileSMS", appName: "Messages", windowTitle: "Sam")
+    let gmailInChrome = DevilModeAppContext(bundleIdentifier: "com.google.Chrome", appName: "Google Chrome", windowTitle: "Inbox (3) - you@example.com - Gmail")
+    let flightsInChrome = DevilModeAppContext(bundleIdentifier: "com.google.Chrome", appName: "Google Chrome", windowTitle: "Google Flights - Find Cheap Flights")
+
+    for riskyLabel in ["Send Message", "send", "Post", "Publish", "Buy now", "Place order", "Pay", "Delete", "Move to Trash", "Submit", "Share…", "Invite people", "Checkout", "Confirm purchase"] {
+        check(DevilModeSafetyCheck.containsRiskyWords(riskyLabel), "\"\(riskyLabel)\" is risky")
+    }
+    for safeLabel in ["Export", "Save Draft", "Sender name", "postcode", "File", "System Settings", "sharp", nil] as [String?] {
+        check(!DevilModeSafetyCheck.containsRiskyWords(safeLabel), "\"\(safeLabel ?? "nil")\" is safe")
+    }
+    let clickSend = DevilModeActionTagParser.parseActionTag(#"[CLICK:1,2,3,4 label="send message"]"#)!
+    check(DevilModeSafetyCheck.confirmationQuestion(for: clickSend, appContext: finder) == "Should I click send message?", "a send button is asked about first")
+    let clickArrow = DevilModeActionTagParser.parseActionTag(#"[CLICK:1,2,3,4 label="blue arrow"]"#)!
+    check(DevilModeSafetyCheck.confirmationQuestion(for: clickArrow, appContext: finder, textUnderTarget: "Send") != nil, "the text under the click counts too, whatever the label says")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: clickArrow, appContext: finder, textUnderTarget: "Export") == nil, "a harmless click goes ahead")
+    let pressReturn = DevilModeAction.pressKeys(DevilModeKeyShortcutParser.parse("return")!)
+    check(DevilModeSafetyCheck.confirmationQuestion(for: pressReturn, appContext: messages) == "Should I press return to send it?", "return in Messages sends")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: pressReturn, appContext: gmailInChrome) != nil, "return in Gmail in a browser sends")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: .pressKeys(DevilModeKeyShortcutParser.parse("cmd+return")!), appContext: DevilModeAppContext(bundleIdentifier: "com.apple.mail", appName: "Mail", windowTitle: nil)) != nil, "cmd+return in Mail sends")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: pressReturn, appContext: flightsInChrome) == nil, "return in a flight search doesn't")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: pressReturn, appContext: finder) == nil, "return in the Finder doesn't")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: .pressKeys(DevilModeKeyShortcutParser.parse("cmd+delete")!), appContext: finder) != nil, "cmd+delete trashes")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: .pressKeys(DevilModeKeyShortcutParser.parse("delete")!), appContext: finder) == nil, "delete alone is editing")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: .typeText("please delete the old invoices"), appContext: finder) != nil, "typed text with a risky word is asked about")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: .typeText("flights to lisbon"), appContext: messages) == nil, "typing alone doesn't send")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: DevilModeActionTagParser.parseActionTag(#"[DRAG:1,2,3,4 label="file to trash"]"#)!, appContext: finder) != nil, "dragging to the trash is asked about")
+    check(DevilModeSafetyCheck.confirmationQuestion(for: .scroll(atScreenshotPoint: .zero, lineCount: 5, screenNumber: nil), appContext: messages) == nil, "scrolling is never risky")
+    check(DevilModeSafetyCheck.isChatOrMailApp(DevilModeAppContext(bundleIdentifier: "com.tinyspeck.slackmacgap", appName: "Slack", windowTitle: nil)), "Slack is a chat app")
+    check(DevilModeSafetyCheck.isQuestionAboutARiskyAction("it's ready to go, should i send it to sam?"), "a question about sending")
+    check(DevilModeSafetyCheck.isQuestionAboutARiskyAction("found three old ones. should i delete them?"), "a question about deleting")
+    check(!DevilModeSafetyCheck.isQuestionAboutARiskyAction("the notes are empty. want me to type something first?"), "a question about something harmless doesn't approve a send")
+    check(!DevilModeSafetyCheck.isQuestionAboutARiskyAction("i sent it to sam. anything else?"), "only the question itself counts, not an earlier sentence")
+    check(!DevilModeSafetyCheck.isQuestionAboutARiskyAction("sending it now."), "not a question")
+    check(!DevilModeSafetyCheck.isChatOrMailApp(finder), "the Finder isn't")
+}
+
+// MARK: Devil mode — the user's yes or no
+do {
+    for yesReply in ["yes", "Yeah, go ahead.", "yes please", "sure", "do it", "hey mose, yes", "okay", "yep send it", "go for it"] {
+        check(DevilModeConfirmationReply.classify(yesReply) == .yes, "\"\(yesReply)\" is a yes")
+    }
+    for noReply in ["no", "No, wait.", "don't", "nope", "wait", "not yet", "cancel that", "yes, but wait"] {
+        check(DevilModeConfirmationReply.classify(noReply) == .no, "\"\(noReply)\" is a no")
+    }
+    for otherReply in ["what's the weather like", "", "yes and then also make the title bigger and export it as a pdf", "send it to anna instead of sam please and also cc bob on it"] {
+        check(DevilModeConfirmationReply.classify(otherReply) == .somethingElse, "\"\(otherReply)\" isn't an answer to the question")
+    }
+}
+
+// MARK: Devil mode — step budget and follow-ups
+do {
+    var stepBudget = DevilModeStepBudget()
+    var stepsTaken = 0
+    while stepBudget.useOneStep() { stepsTaken += 1 }
+    check(stepsTaken == DevilModeStepBudget.maximumAutomaticSteps && stepsTaken == 15, "fifteen automatic steps per request")
+    check(stepBudget.isUsedUp && !stepBudget.useOneStep(), "then no more")
+    stepBudget.reset()
+    check(stepBudget.stepsRemaining == 15 && !stepBudget.isUsedUp, "a new request starts a fresh budget")
+
+    let clickExport = DevilModeActionTagParser.parseActionTag(#"[CLICK:1,2,3,4 label="export"]"#)!
+    check(DevilModeFollowUp.transcript(afterPerforming: [clickExport]) == "(devil step) you clicked export. what's next?", "the follow-up after one click")
+    let fieldActions = [DevilModeActionTagParser.parseActionTag(#"[CLICK:1,2,3,4 label="name"]"#)!, DevilModeAction.typeText("Ada"), DevilModeAction.pressKeys(DevilModeKeyShortcutParser.parse("return")!)]
+    check(DevilModeFollowUp.transcript(afterPerforming: fieldActions) == #"(devil step) you clicked name, typed "Ada", then pressed return. what's next?"#, "the follow-up after several actions: \(DevilModeFollowUp.transcript(afterPerforming: fieldActions))")
+    check(DevilModeFollowUp.transcript(afterPerforming: [.scroll(atScreenshotPoint: .zero, lineCount: -4, screenNumber: nil)]) == "(devil step) you scrolled up. what's next?", "the follow-up after a scroll")
+    check(DevilModeFollowUp.isDevilStepTranscript("(devil step) you clicked export. what's next?") && !DevilModeFollowUp.isDevilStepTranscript("(guided step) i clicked export. what's next?"), "devil steps are told apart from guided steps")
+    check(DevilModeFollowUp.historyDescription(of: "(devil step) you clicked export. what's next?", assistantName: "Mose") == "Mose clicked export", "the History window says what Mose did")
+    let approvalTranscript = DevilModeFollowUp.transcript(afterApprovalOf: "Should I click send message?")
+    check(approvalTranscript.hasPrefix("(devil step)") && approvalTranscript.contains("before you click send message, and i said yes"), "after a yes, Claude is told to go ahead: \(approvalTranscript)")
+    check(DevilModeFollowUp.historyDescription(of: approvalTranscript, assistantName: "Mose") == "You said yes", "the History window shows the yes")
+    check(DevilModeFollowUp.noteForClaude(isDevilModeEnabled: true).contains("devil mode is on") && DevilModeFollowUp.noteForClaude(isDevilModeEnabled: false).contains("devil mode is off"), "Claude is told whether devil mode is on")
+
+    check(clickExport.progressiveDescription == "Clicking export" && clickExport.imperativeDescription == "click export", "describing a click")
+    check(DevilModeActionTagParser.parseActionTag(#"[DOUBLECLICK:1,2,3,4 label="report"]"#)!.progressiveDescription == "Double-clicking report", "describing a double-click")
+    let longTypedText = DevilModeAction.typeText(String(repeating: "word ", count: 20))
+    check(longTypedText.progressiveDescription.hasSuffix("…\"") && longTypedText.progressiveDescription.count < 60, "long typed text is cut in the note: \(longTypedText.progressiveDescription)")
+}
+
+// MARK: Devil mode — coordinates and typing
+do {
+    let primaryScreenHeight: CGFloat = 982
+    check(DevilModeScreenCoordinates.quartzGlobalPoint(fromAppKitGlobalPoint: CGPoint(x: 100, y: 900), primaryScreenHeight: primaryScreenHeight) == CGPoint(x: 100, y: 82), "AppKit to Quartz flips y on the primary screen")
+    check(DevilModeScreenCoordinates.quartzGlobalPoint(fromAppKitGlobalPoint: CGPoint(x: 100, y: 1200), primaryScreenHeight: primaryScreenHeight) == CGPoint(x: 100, y: -218), "a screen above the primary one has negative Quartz y")
+    check(DevilModeScreenCoordinates.quartzGlobalPoint(fromAppKitGlobalPoint: CGPoint(x: -1440, y: 300), primaryScreenHeight: primaryScreenHeight) == CGPoint(x: -1440, y: 682), "a screen to the left keeps its negative x")
+    let roundTripPoint = CGPoint(x: 512.5, y: 77.25)
+    check(DevilModeScreenCoordinates.appKitGlobalPoint(fromQuartzGlobalPoint: DevilModeScreenCoordinates.quartzGlobalPoint(fromAppKitGlobalPoint: roundTripPoint, primaryScreenHeight: primaryScreenHeight), primaryScreenHeight: primaryScreenHeight) == roundTripPoint, "the conversion goes both ways")
+
+    let dragPath = DevilModeScreenCoordinates.dragPathPoints(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 400, y: 160), stepCount: 20)
+    check(dragPath.count == 20 && dragPath.last == CGPoint(x: 400, y: 160), "a drag path ends exactly on the drop point")
+    check(dragPath.first != CGPoint(x: 100, y: 100) && zip(dragPath, dragPath.dropFirst()).allSatisfy { $0.x <= $1.x }, "it moves away from the start and only forward")
+    check(DevilModeScreenCoordinates.dragPathPoints(from: .zero, to: CGPoint(x: 5, y: 5), stepCount: 0) == [CGPoint(x: 5, y: 5)], "no steps still ends at the drop point")
+
+    check(!DevilModeTyping.shouldPaste("flights to lisbon"), "short text is typed key by key")
+    check(DevilModeTyping.shouldPaste(String(repeating: "a", count: 41)), "long text is pasted")
+    check(DevilModeTyping.shouldPaste("line one\nline two"), "text with a line break is pasted, so it can't press return")
+    let keystrokeUnits = DevilModeTyping.keystrokeUnits(of: "hé👍")
+    check(keystrokeUnits.count == 3 && keystrokeUnits[2].count == 2, "an emoji goes out as one key event of two UTF-16 units")
+    check(DevilModeEventMark.eventSourceUserData == 0x4D6F7365, "Mose's events are marked \"Mose\"")
 }
 
 print("\(checkCount - failureCount)/\(checkCount) checks passed")

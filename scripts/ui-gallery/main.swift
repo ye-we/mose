@@ -129,6 +129,22 @@ MainActor.assumeIsolated {
     render(ConnectedAppsView(companionManager: connectedAppsManager), size: NSSize(width: 520, height: 600), name: "connected-apps")
     render(CompanionPanelView(companionManager: connectedAppsManager).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-with-connected-apps")
 
+    // Devil mode: the panel with it on, and the overlay's note while Mose drives
+    let devilModeManager = manager { $0.claudeCodeSetupState = .ready(account); $0.hasMicrophonePermission = true; $0.hasAccessibilityPermission = true; $0.hasScreenRecordingPermission = true; $0.hasScreenContentPermission = true; $0.hasCompletedOnboarding = true; $0.isDevilModeEnabled = true }
+    render(CompanionPanelView(companionManager: devilModeManager).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-devil-mode-on")
+    let repositoryRootPath = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path
+    let devilPracticeScreenshot = NSImage(contentsOfFile: repositoryRootPath + "/scripts/sketch-tests/fixtures/devil-practice.png")
+    let devilPracticeSceneSize = NSSize(width: 720, height: 560)
+    render(
+        ZStack {
+            if let devilPracticeScreenshot { Image(nsImage: devilPracticeScreenshot).resizable().frame(width: devilPracticeSceneSize.width, height: devilPracticeSceneSize.height) }
+            DevilModeDrivingNoteView(currentActionDescription: "Clicking export", screenFrame: CGRect(origin: .zero, size: devilPracticeSceneSize))
+        }
+        .frame(width: devilPracticeSceneSize.width, height: devilPracticeSceneSize.height),
+        size: devilPracticeSceneSize,
+        name: "devil-mode-driving-note"
+    )
+
     let panelProblem = manager { $0.claudeCodeSetupState = .notSignedIn; $0.hasCompletedOnboarding = true }
     render(CompanionPanelView(companionManager: panelProblem).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-signed-out")
 }

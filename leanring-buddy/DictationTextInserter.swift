@@ -106,6 +106,9 @@ enum FocusedFieldTextInserter {
         // Set the flags explicitly so a still-held control or fn doesn't turn this into another shortcut
         commandVKeyDown?.flags = .maskCommand
         commandVKeyUp?.flags = .maskCommand
+        // Mose's own keys, so devil mode's takeover watch never takes them for the user's
+        commandVKeyDown?.setIntegerValueField(.eventSourceUserData, value: DevilModeEventMark.eventSourceUserData)
+        commandVKeyUp?.setIntegerValueField(.eventSourceUserData, value: DevilModeEventMark.eventSourceUserData)
         commandVKeyDown?.post(tap: .cghidEventTap)
         commandVKeyUp?.post(tap: .cghidEventTap)
     }

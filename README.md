@@ -13,6 +13,7 @@ Mose grew out of [Clicky](https://github.com/farzaa/clicky) by Farza, which is M
 - **Answers about your screen, out loud.** Short answers, one or two sentences, in your Mac's own voice. It starts talking as soon as the first sentence is ready.
 - **Draws on your screen.** Circles, boxes, arrows, underlines, highlights and short handwritten notes, drawn with its cursor as the pen while it talks.
 - **Guided steps.** Ask how to do something and it marks the one thing to click next. Click it and it looks again and shows the next step, one click at a time. Each step also stays pinned as a small card in a corner, and gets a check when you've done it.
+- **Devil mode.** Turn it on in the menu bar panel and say "do it for me": Mose clicks, double-clicks, right-clicks, drags, scrolls, types and presses shortcuts for you, one step at a time, flying its cursor to each spot first. Press Esc or move your mouse and it stops at once. Before anything that sends, posts, buys, pays, deletes, submits, publishes, shares or invites, it asks and waits for your "yes". It never types into password fields or touches its own windows. Off by default; when you only ask how, it still shows you instead.
 - **Conversations and memory.** It follows the conversation you're having, and remembers lasting things about you between conversations (the apps you use, what you're working on, anything you ask it to remember). You can read, search and delete all of it.
 - **Background tasks.** Ask it to research something or make a file ("make me a one page PDF comparing…") and a separate Claude Code session does it while you carry on. It tells you when it's done. Its shell commands are sandboxed to its own folder, and it can use the apps you've connected to Claude Code (Gmail, Google Drive, Notion…) only if you turn them on one by one.
 - **Dictation anywhere.** Hold fn and Control, talk, let go, and the text is typed wherever your cursor is.
@@ -33,7 +34,7 @@ Mose lives in the menu bar, not the Dock. If your menu bar is too full to show i
 
 ### Conversations, and what's kept
 
-Everything you say and every answer is saved in conversations on your Mac, in `~/Library/Application Support/com.yewe.mose/Conversations/`, one file each. Screenshots are never saved. A conversation only leaves your Mac as context for the next answer, sent to Claude through your own Claude Code sign-in; long ones are sent as the recent exchanges plus a short summary of the start.
+Everything you say and every answer is saved in conversations on your Mac, in `~/Library/Application Support/com.yewe.mose/Conversations/`, one file each, as text: screenshots aren't kept (see Privacy). A conversation only leaves your Mac as context for the next answer, sent to Claude through your own Claude Code sign-in; long ones are sent as the recent exchanges plus a short summary of the start.
 
 - Say **"new chat"**, **"start a new session"** or **"start over"** to begin fresh (add a question after it and it's answered in the new one). After 30 minutes of quiet, your next question starts a new conversation by itself.
 - Say **"go back to the chat about…"** or **"continue my last conversation"** to pick an older one up again, or open **History** from the menu bar panel to read, search, continue or delete conversations.
@@ -48,12 +49,18 @@ Background tasks can use the apps you've connected to Claude Code, such as Gmail
 
 ### Privacy
 
-Mose has no server. Your questions, screenshots, conversations and memory go to Claude only through your own Claude Code sign-in, and everything it keeps stays in files on your Mac. Analytics and auto-updates are off.
+Mose has no server, and it looks at as little as it can.
+
+- **Screenshots** are taken only when you let go of Control + Option, and for the next step of a walkthrough or of devil mode. Each one shows only the display your mouse is on (without Mose's own windows), shrunk to 1280 pixels, and goes to Claude only through your own Claude Code sign-in. They're never kept: voice answers hold them in memory and tell Claude Code not to save the session, and a background task gets a copy in its folder only while it runs, deleted when it ends.
+- **Keys:** the hotkey listener only sees Control, Option and fn going down and up, never what you type. While devil mode is driving, it also watches for Esc and for your mouse, so it can stop.
+- **What's kept** is text: your conversations and memory, in files on your Mac, which you can read and delete in History.
+
+Analytics and auto-updates are off.
 
 ### The permissions, and why
 
 - **Microphone**: to hear you while you hold the keys.
-- **Accessibility**: for the hotkeys, and to type what you dictate.
+- **Accessibility**: for the hotkeys, to type what you dictate, and for devil mode's clicks and keys.
 - **Screen Recording**: to see your screen when you ask. It only takes a screenshot when you use the hotkey.
 - **Screen capture**: macOS confirms once more before an app can capture the screen.
 
@@ -64,8 +71,9 @@ Mose has no server. Your questions, screenshots, conversations and memory go to 
 | Hold **Control + Option** | Talk about your screen. Let go to send. |
 | Hold **fn + Control** | Type with your voice in any text field. |
 | Drag while holding **Control + Option** | Circle something to show what you mean. |
+| **Esc**, or move the mouse | Stop devil mode while Mose is clicking and typing. |
 
-The menu bar panel shows what Mose is doing and any background tasks, and has the settings: the model (Haiku is fastest, Sonnet is the default, Opus is the most capable), "Think before answering" (off by default, since it can add many seconds before Mose starts talking), the apps background tasks may use, and open at login.
+The menu bar panel shows what Mose is doing and any background tasks, and has the settings: the model (Haiku is fastest, Sonnet is the default, Opus is the most capable), "Think before answering" (off by default, since it can add many seconds before Mose starts talking), devil mode (off by default), the apps background tasks may use, and open at login.
 
 ## Build it yourself
 
@@ -82,11 +90,12 @@ scripts/render-ui-gallery.sh OUT     # setup window, panel and step cards in sev
 scripts/check-claude-code-engine.sh  # the Claude Code engine outside the app (uses a little Claude usage)
 scripts/check-answer-length.sh       # answer lengths and guided-step targets with the current prompt (uses a little usage)
 scripts/check-memory.sh              # remembering, forgetting and learning with the current prompts (uses a little usage)
+scripts/check-devil-mode.sh          # devil mode's actions on fixture screenshots, asking before sending (uses a little usage)
 ```
 
 ## How it works
 
-A menu bar app with two kinds of windows: the dropdown panel, and a full-screen transparent overlay per display where the blue cursor flies and draws. Holding the hotkey records your voice with Apple Speech; letting go sends the transcript and a screenshot to Claude by running the Claude Code CLI (`claude -p`) on your sign-in, with tools, plugins and extended thinking turned off so it answers fast. The answer streams back, each sentence is spoken with macOS `say` as soon as it's complete, and tags in the answer (`[POINT:…]`, `[DRAW:…]`, `[AGENT:…]`, `[REMEMBER:…]`) become cursor flights, drawings, background tasks and memories, each timed to its sentence. `AGENTS.md` has the full breakdown.
+A menu bar app with two kinds of windows: the dropdown panel, and a full-screen transparent overlay per display where the blue cursor flies and draws. Holding the hotkey records your voice with Apple Speech; letting go sends the transcript and a screenshot to Claude by running the Claude Code CLI (`claude -p`) on your sign-in, with tools, plugins and extended thinking turned off so it answers fast. The answer streams back, each sentence is spoken with macOS `say` as soon as it's complete, and tags in the answer (`[POINT:…]`, `[DRAW:…]`, `[AGENT:…]`, `[REMEMBER:…]`) become cursor flights, drawings, background tasks and memories, each timed to its sentence. In devil mode, action tags (`[CLICK:…]`, `[TYPE:…]`, `[KEY:…]` and the rest) become real clicks and keys, posted as marked CGEvents one step at a time. `AGENTS.md` has the full breakdown.
 
 ```
 leanring-buddy/                  Swift source
@@ -99,6 +108,7 @@ leanring-buddy/                  Swift source
   UserMemory.swift                 memory across conversations
   ScreenSketch*.swift              drawing on the screen
   GuidedStepCard*.swift            pinned step cards
+  DevilMode*.swift                 devil mode: action tags, safety checks, posting clicks and keys
   SetupWindow.swift                first-run setup
   CompanionPanelView.swift         the menu bar panel
   OverlayWindow.swift              the cursor overlay
