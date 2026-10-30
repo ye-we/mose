@@ -94,6 +94,16 @@ enum BuddyPushToTalkShortcut {
 
     static let currentShortcutOption: ShortcutOption = .controlOption
 
+    /// Whether the talk keys are down right now, read from the keyboard
+    /// itself rather than from events, so a missed release can be noticed.
+    static func isPushToTalkShortcutHeldDown() -> Bool {
+        let requiredModifierFlags = currentShortcutOption.modifierOnlyFlags
+            ?? currentShortcutOption.spaceShortcutModifierFlags
+            ?? []
+        let currentModifierFlags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return currentModifierFlags.contains(requiredModifierFlags)
+    }
+
     /// Hold fn + control to dictate into whatever text field has focus.
     /// Option and command must be up, so it never overlaps ctrl + option.
     static let dictationShortcutDisplayText = "fn + control"
@@ -288,7 +298,12 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private let transcriptionProvider: any BuddyTranscriptionProvider
-    private let audioEngine = AVAudioEngine()
+    /// Replaced with a fresh one after the microphone changes (headphones
+    /// connecting, a different input picked), because the old one keeps the
+    /// old device's format and refuses to record with the new one.
+    private var audioEngine = AVAudioEngine()
+    private var audioEngineNeedsRebuild = false
+    private var audioEngineConfigurationChangeObserver: NSObjectProtocol?
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
     private var activeStartSource: BuddyDictationStartSource?
     private var draftCallbacks: BuddyDictationDraftCallbacks?
@@ -310,6 +325,17 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         self.transcriptionProvider = transcriptionProvider
         self.transcriptionProviderDisplayName = transcriptionProvider.displayName
         super.init()
+
+        audioEngineConfigurationChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                print("🎙️ BuddyDictationManager: the microphone changed, the audio engine will be rebuilt")
+                self?.audioEngineNeedsRebuild = true
+            }
+        }
     }
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {
@@ -571,17 +597,66 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         self.activeTranscriptionSession = activeTranscriptionSession
         print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
 
+        // An engine made before the microphone changed records in the old
+        // device's format, which the new device rejects: start from a fresh one
+        if audioEngineNeedsRebuild
+            || !Self.hasUsableInputFormat(audioEngine)
+            || !Self.inputFormatMatchesTheHardware(audioEngine) {
+            rebuildAudioEngine()
+        }
+        guard Self.hasUsableInputFormat(audioEngine) else {
+            throw NSError(
+                domain: "BuddyDictation",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "no microphone is available right now. check the input in sound settings."]
+            )
+        }
+
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
-        inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            self?.activeTranscriptionSession?.appendAudioBuffer(buffer)
-            self?.updateAudioPowerLevel(from: buffer)
+        // AVAudioEngine raises Objective-C exceptions here (a format the
+        // device won't take), which Swift can't catch and which would leave
+        // push-to-talk stuck: they come back as errors instead.
+        try ObjectiveCExceptionCatcher.run(catchingExceptionsIn: {
+            inputNode.removeTap(onBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+                self?.activeTranscriptionSession?.appendAudioBuffer(buffer)
+                self?.updateAudioPowerLevel(from: buffer)
+            }
+            self.audioEngine.prepare()
+        })
+        do {
+            try audioEngine.start()
+        } catch {
+            // Usually the device went away between the check and the start;
+            // the next press gets a fresh engine
+            audioEngineNeedsRebuild = true
+            throw error
         }
+    }
 
-        audioEngine.prepare()
-        try audioEngine.start()
+    private func rebuildAudioEngine() {
+        print("🎙️ BuddyDictationManager: rebuilding the audio engine for the current microphone")
+        audioEngine.stop()
+        try? ObjectiveCExceptionCatcher.run(catchingExceptionsIn: {
+            self.audioEngine.inputNode.removeTap(onBus: 0)
+        })
+        audioEngine = AVAudioEngine()
+        audioEngineNeedsRebuild = false
+    }
+
+    /// There's an input with channels and a sample rate (there isn't while
+    /// a Bluetooth headset is still connecting, or with no microphone).
+    private static func hasUsableInputFormat(_ audioEngine: AVAudioEngine) -> Bool {
+        let engineSideFormat = audioEngine.inputNode.outputFormat(forBus: 0)
+        return engineSideFormat.sampleRate > 0 && engineSideFormat.channelCount > 0
+    }
+
+    /// The engine's side of the input still has the hardware's sample rate.
+    /// After a device change it keeps the old one until it's rebuilt.
+    private static func inputFormatMatchesTheHardware(_ audioEngine: AVAudioEngine) -> Bool {
+        audioEngine.inputNode.outputFormat(forBus: 0).sampleRate == audioEngine.inputNode.inputFormat(forBus: 0).sampleRate
     }
 
     private func handleRecognitionError(_ error: Error) {

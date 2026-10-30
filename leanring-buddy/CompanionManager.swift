@@ -95,6 +95,8 @@ final class CompanionManager: ObservableObject {
     /// True while the talk hotkey is held: the overlay catches the mouse so
     /// dragging draws instead of clicking the app underneath.
     @Published private(set) var isAcceptingUserInk = false
+    /// Turns ink off if the talk keys turn out not to be held (see setAcceptingUserInk).
+    private var userInkKeyWatchTimer: Timer?
 
     // MARK: - Guided Steps State
 
@@ -918,6 +920,24 @@ final class CompanionManager: ObservableObject {
     private func setAcceptingUserInk(_ shouldAcceptUserInk: Bool) {
         isAcceptingUserInk = shouldAcceptUserInk
         overlayWindowManager.setAcceptsMouseInput(shouldAcceptUserInk)
+
+        userInkKeyWatchTimer?.invalidate()
+        userInkKeyWatchTimer = nil
+        guard shouldAcceptUserInk else { return }
+        // While ink is on, the overlay catches every click. If the key release
+        // never arrives (push-to-talk failed to start, an event got lost), the
+        // mouse would stay stuck drawing, so check the keys themselves.
+        let keyWatchTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isAcceptingUserInk,
+                      !BuddyPushToTalkShortcut.isPushToTalkShortcutHeldDown() else { return }
+                print("⚠️ The talk keys aren't down any more: giving the mouse back")
+                self.setAcceptingUserInk(false)
+            }
+        }
+        // Common modes, so it also runs while the mouse is being dragged
+        RunLoop.main.add(keyWatchTimer, forMode: .common)
+        userInkKeyWatchTimer = keyWatchTimer
     }
 
     func beginUserInkStroke(atGlobalLocation globalLocation: CGPoint) {
