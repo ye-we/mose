@@ -15,7 +15,7 @@
 # Usage: scripts/build-shareable-dmg.sh
 # Optional environment:
 #   SIGNING_TEAM        team whose Apple Development certificate signs it (default: the project's team)
-#   SHARED_BUNDLE_ID    bundle id of the shared copy (default: com.yewe.clicky)
+#   SHARED_BUNDLE_ID    bundle id of the shared copy (default: com.yewe.mose)
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,11 +27,14 @@ read_app_build_setting() {
   echo "$app_build_settings" | awk -v setting_name="$1" '$1 == setting_name && $2 == "=" { print $3; exit }'
 }
 signing_team="${SIGNING_TEAM:-$(read_app_build_setting DEVELOPMENT_TEAM)}"
-shared_bundle_id="${SHARED_BUNDLE_ID:-com.yewe.clicky}"
+shared_bundle_id="${SHARED_BUNDLE_ID:-com.yewe.mose}"
+product_name="$(read_app_build_setting PRODUCT_NAME)"
 marketing_version="$(read_app_build_setting MARKETING_VERSION)"
 build_number="$(read_app_build_setting CURRENT_PROJECT_VERSION)"
 
-build_folder="$repository_root/build/shareable"
+# Built outside the home folder: libraries record their build paths in the
+# binary, and the shared copy shouldn't carry the builder's username
+build_folder="/private/tmp/shareable-app-build"
 releases_folder="$repository_root/releases"
 mkdir -p "$build_folder" "$releases_folder"
 
@@ -52,9 +55,9 @@ xcodebuild \
   ONLY_ACTIVE_ARCH=NO \
   build 2>&1 | grep -E "error:|warning: .*[Ss]ign|BUILD (SUCCEEDED|FAILED)" || true
 
-app_path="$build_folder/DerivedData/Build/Products/Release/Clicky.app"
+app_path="$build_folder/DerivedData/Build/Products/Release/$product_name.app"
 if [[ ! -d "$app_path" ]]; then
-  echo "❌ The build didn't produce Clicky.app" >&2
+  echo "❌ The build didn't produce $product_name.app" >&2
   exit 1
 fi
 if [[ -e "$app_path/Contents/embedded.provisionprofile" ]]; then
@@ -69,14 +72,14 @@ if [[ -z "$signing_authority" ]]; then
   exit 1
 fi
 echo "Signed by: $signing_authority"
-echo "Runs on: $(lipo -archs "$app_path/Contents/MacOS/Clicky")"
+echo "Runs on: $(lipo -archs "$app_path/Contents/MacOS/$product_name")"
 
-dmg_path="$releases_folder/Clicky-$marketing_version.dmg"
+dmg_path="$releases_folder/$product_name-$marketing_version.dmg"
 dmg_staging_folder="$(mktemp -d)"
 cp -R "$app_path" "$dmg_staging_folder/"
 ln -s /Applications "$dmg_staging_folder/Applications"
 rm -f "$dmg_path"
-hdiutil create -volname "Clicky $marketing_version" -srcfolder "$dmg_staging_folder" -ov -format UDZO "$dmg_path" > /dev/null
+hdiutil create -volname "$product_name $marketing_version" -srcfolder "$dmg_staging_folder" -ov -format UDZO "$dmg_path" > /dev/null
 rm -rf "$dmg_staging_folder"
 codesign --sign "$signing_authority" "$dmg_path"
 

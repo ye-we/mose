@@ -19,7 +19,7 @@ import SwiftUI
 
 /// The product's name in one place, so renaming it is a one-line change.
 enum AppIdentity {
-    static let displayName = "Clicky"
+    static let displayName = "Mose"
 }
 
 // MARK: - Colors used by setup and the panel

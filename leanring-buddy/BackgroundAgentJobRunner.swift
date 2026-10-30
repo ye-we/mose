@@ -44,8 +44,11 @@ struct BackgroundAgentJobRecord: Codable {
 
 @MainActor
 final class BackgroundAgentJobRunner: BackgroundAgentJobService {
-    static let jobsDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/ClickyLocal/agent-jobs", isDirectory: true)
+    /// ~/Library/Application Support/<bundle id>/agent-jobs, next to the
+    /// conversations and memory.
+    static let jobsDirectoryURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent(Bundle.main.bundleIdentifier ?? "Mose", isDirectory: true)
+        .appendingPathComponent("agent-jobs", isDirectory: true)
     private static let maximumRunningJobCount = 3
     private static let jobTimeLimitSeconds: TimeInterval = 30 * 60
     private nonisolated static let agentModelAlias = "sonnet"
@@ -59,7 +62,7 @@ final class BackgroundAgentJobRunner: BackgroundAgentJobService {
     nonisolated static let sandboxSettingsJSON = #"{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}}"#
 
     nonisolated static let agentInstructions = """
-    You're a helper Clicky started on this person's Mac to do one piece of work in the background. They asked out loud and Clicky wrote you the brief. They aren't watching: work it through end to end on your own.
+    You're a helper Mose started on this person's Mac to do one piece of work in the background. They asked out loud and Mose wrote you the brief. They aren't watching: work it through end to end on your own.
 
     Your current folder is this job's home. Put what they asked for in output/ and keep scratch work in tmp/. If tmp/screen.jpg exists, it's a screenshot of their screen from when they asked.
 

@@ -66,7 +66,7 @@ final class UserMemoryStore: ObservableObject {
     /// ~/Library/Application Support/<bundle id>/Memory.json
     nonisolated static var defaultFileURL: URL {
         let applicationSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let appFolderName = Bundle.main.bundleIdentifier ?? "ClickyLocal"
+        let appFolderName = Bundle.main.bundleIdentifier ?? "Mose"
         return applicationSupportURL.appendingPathComponent(appFolderName, isDirectory: true)
             .appendingPathComponent("Memory.json")
     }
@@ -310,7 +310,7 @@ enum UserMemoryContext {
     }
 
     static let learningSystemPrompt = """
-    you read a finished conversation between a person and clicky, a voice assistant that sees their screen, and pick out what's worth remembering about the person in future conversations. keep lasting things: the apps and tools they use, what they work on and their projects, people and names they work with, how experienced they are, and how they like to be helped. leave out what they asked this time, problems or errors they ran into along the way, what was on screen, passing moods, and anything sensitive like passwords, account numbers, addresses, health or money. only keep what they said or clearly showed, never guesses.
+    you read a finished conversation between a person and mose, a voice assistant that sees their screen, and pick out what's worth remembering about the person in future conversations. keep lasting things: the apps and tools they use, what they work on and their projects, people and names they work with, how experienced they are, and how they like to be helped. leave out what they asked this time, problems or errors they ran into along the way, what was on screen, passing moods, and anything sensitive like passwords, account numbers, addresses, health or money. only keep what they said or clearly showed, never guesses.
 
     reply with lines only, each fact short (under fifteen words) and about "they":
     + a new fact
@@ -327,7 +327,7 @@ enum UserMemoryContext {
             .filter { !$0.isGuidedStepFollowUp }
             .map { conversationExchange in
                 let appText = conversationExchange.frontmostAppName.map { " (in \($0))" } ?? ""
-                return "they said\(appText): \(conversationExchange.userTranscript)\nclicky said: \(ConversationContext.spokenText(of: conversationExchange.assistantResponse))"
+                return "they said\(appText): \(conversationExchange.userTranscript)\nmose said: \(ConversationContext.spokenText(of: conversationExchange.assistantResponse))"
             }
             .joined(separator: "\n")
         return "what you already know about them:\n\(knownFactLines)\n\nthe conversation:\n\(conversationTranscript)"

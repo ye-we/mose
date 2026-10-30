@@ -74,7 +74,7 @@ final class ConversationSessionStore: ObservableObject {
     /// ~/Library/Application Support/<bundle id>/Conversations
     nonisolated static var defaultDirectoryURL: URL {
         let applicationSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let appFolderName = Bundle.main.bundleIdentifier ?? "ClickyLocal"
+        let appFolderName = Bundle.main.bundleIdentifier ?? "Mose"
         return applicationSupportURL.appendingPathComponent(appFolderName, isDirectory: true)
             .appendingPathComponent("Conversations", isDirectory: true)
     }
@@ -284,14 +284,14 @@ enum ConversationContext {
     }
 
     static let summarizerSystemPrompt = """
-    you keep the running summary of a conversation between a person and clicky, a voice assistant that sees their screen. write at most 120 words, plain text, no lists. keep what later questions might need: what they were working on and in which apps, decisions, facts and names they mentioned, what clicky told them to do, and anything left open. leave out greetings, filler and screen coordinates. refer to the person as "they".
+    you keep the running summary of a conversation between a person and mose, a voice assistant that sees their screen. write at most 120 words, plain text, no lists. keep what later questions might need: what they were working on and in which apps, decisions, facts and names they mentioned, what clicky told them to do, and anything left open. leave out greetings, filler and screen coordinates. refer to the person as "they".
     """
 
     /// The request for an updated summary: the previous summary plus the
     /// exchanges to fold into it.
     static func summaryRequest(previousSummary: String?, exchangesToFold: [ConversationExchange]) -> String {
         let foldedTranscript = exchangesToFold.map { conversationExchange in
-            "they said: \(conversationExchange.userTranscript)\nclicky said: \(spokenText(of: conversationExchange.assistantResponse))"
+            "they said: \(conversationExchange.userTranscript)\nmose said: \(spokenText(of: conversationExchange.assistantResponse))"
         }.joined(separator: "\n")
         let previousSummaryText = previousSummary.map { "the summary so far:\n\($0)\n\n" } ?? ""
         return "\(previousSummaryText)fold these later exchanges into the summary and reply with only the new summary:\n\(foldedTranscript)"
@@ -314,7 +314,7 @@ enum ConversationTitle {
     /// A short title from the first thing the user asked: its first few words,
     /// without fillers like "hey" or "um", starting with a capital.
     static func title(fromFirstQuestion firstQuestion: String) -> String {
-        let fillerWords: Set<String> = ["hey", "hi", "hello", "clicky", "um", "uh", "so", "okay", "ok", "yo", "please"]
+        let fillerWords: Set<String> = ["hey", "hi", "hello", "mose", "clicky", "um", "uh", "so", "okay", "ok", "yo", "please"]
         var titleWords = firstQuestion
             .replacingOccurrences(of: #"[^\p{L}\p{N}'\s-]"#, with: " ", options: .regularExpression)
             .split(whereSeparator: \.isWhitespace)
@@ -347,7 +347,7 @@ enum ConversationVoiceCommand: Equatable {
     static func parse(_ transcript: String) -> ConversationVoiceCommand? {
         // "Hey Clicky, start over": the wake word is its own clause, so it goes first
         let transcriptWithoutWakeWord = transcript.replacingOccurrences(
-            of: #"^\s*(?:(?:hey|okay|ok|hi)\s+)?clicky\s*[,.!:]?\s*"#,
+            of: #"^\s*(?:(?:hey|okay|ok|hi)\s+)?(?:mose|clicky)\s*[,.!:]?\s*"#,
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
@@ -401,7 +401,7 @@ enum ConversationVoiceCommand: Equatable {
             .replacingOccurrences(of: #"[^\p{L}\p{N}'\s]"#, with: " ", options: .regularExpression)
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
-        let leadingFillers = ["hey clicky ", "okay clicky ", "ok clicky ", "clicky ", "hey ", "okay ", "ok ", "um ", "uh ", "so ", "alright ", "all right "]
+        let leadingFillers = ["hey mose ", "okay mose ", "ok mose ", "mose ", "hey clicky ", "okay clicky ", "ok clicky ", "clicky ", "hey ", "okay ", "ok ", "um ", "uh ", "so ", "alright ", "all right "]
         var didRemoveFiller = true
         while didRemoveFiller {
             didRemoveFiller = false
