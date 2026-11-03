@@ -634,6 +634,28 @@ enum DevilModeFollowUp {
     }
 }
 
+// MARK: - Telling the user's hand from Mose's
+
+enum DevilModeTakeoverRule {
+    /// How far the pointer may wander from where it should be (where Mose
+    /// last put it, or where it was when the run started) before it counts
+    /// as the user moving the mouse. A hand resting on a mouse or trackpad
+    /// makes it twitch by a point or two, which mustn't stop a run; any
+    /// real move goes past this at once.
+    static let userMouseMoveToleranceInPoints: CGFloat = 30
+
+    static func isUserMovingTheMouse(eventLocation: CGPoint, expectedMouseLocation: CGPoint) -> Bool {
+        hypot(eventLocation.x - expectedMouseLocation.x, eventLocation.y - expectedMouseLocation.y) > userMouseMoveToleranceInPoints
+    }
+
+    /// Mose's own events carry its mark; they also come from its own
+    /// process, which still tells them apart if the mark is ever lost.
+    static func isMosesOwnEvent(eventSourceUserData: Int64, eventSourceProcessIdentifier: Int64, ownProcessIdentifier: Int32) -> Bool {
+        eventSourceUserData == DevilModeEventMark.eventSourceUserData
+            || (eventSourceProcessIdentifier != 0 && eventSourceProcessIdentifier == Int64(ownProcessIdentifier))
+    }
+}
+
 // MARK: - Coordinates
 
 enum DevilModeScreenCoordinates {

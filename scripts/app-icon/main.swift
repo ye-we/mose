@@ -1,85 +1,113 @@
 //
 //  scripts/app-icon/main.swift
 //
-//  Draws the app icon: the companion's blue pointer aimed at a button that
-//  Clicky has circled in orange marker. The ring comes from the app's own
-//  sketch engine, so it has the same hand-drawn wobble as marks on screen.
-//  Run scripts/render-app-icon.sh to write every size into the asset catalog.
+//  Draws the app icon: Mose, a mascot head in the companion's cursor blue
+//  with straight dark bangs, a deadpan stare and a chin-curtain beard (a
+//  full beard along the jaw, no mustache), the look Mose is named after.
+//  It's a mascot, not anyone's likeness. Run scripts/render-app-icon.sh to
+//  write every size into the asset catalog.
 //
 
 import AppKit
 import SwiftUI
 
-// The ring comes from the real sketch engine at screen scale (so its wobble has
-// the same character as on screen) and is scaled up for the icon.
-let ringScale: CGFloat = 4.0
-let circledElementRect = CGRect(x: 312, y: 352, width: 300, height: 128)
-let ringCanvasSize = CGSize(width: 256, height: 256)
-let ringDrawing = ScreenSketchGeometry.makeDrawing(
-    kind: .circle,
-    localPoints: [
-        CGPoint(x: circledElementRect.minX / ringScale, y: circledElementRect.minY / ringScale),
-        CGPoint(x: circledElementRect.maxX / ringScale, y: circledElementRect.maxY / ringScale),
-    ],
-    label: nil, inkColor: .orange, canvasSize: ringCanvasSize, seed: 11, isOverDarkBackground: true)
+// Everything is laid out on the 1024 canvas; the icon body is the 824pt
+// rounded square in the middle (the macOS icon grid).
 
-/// An arrowhead with a notched back, pointing up: unmistakably a pointer at icon size.
-struct NotchedPointerShape: Shape {
+/// The head: wide at the temples, narrowing to a rounded jaw.
+struct HeadShape: Shape {
     func path(in rect: CGRect) -> Path {
-        func point(_ unitX: CGFloat, _ unitY: CGFloat) -> CGPoint {
-            CGPoint(x: rect.midX + unitX * rect.width / 2, y: rect.midY + unitY * rect.height / 2)
+        var headPath = Path()
+        headPath.move(to: CGPoint(x: 512, y: 236))
+        // Crown to the temples
+        headPath.addCurve(to: CGPoint(x: 730, y: 470), control1: CGPoint(x: 650, y: 236), control2: CGPoint(x: 730, y: 330))
+        // Down the cheek to the jaw
+        headPath.addCurve(to: CGPoint(x: 512, y: 800), control1: CGPoint(x: 730, y: 640), control2: CGPoint(x: 640, y: 800))
+        headPath.addCurve(to: CGPoint(x: 294, y: 470), control1: CGPoint(x: 384, y: 800), control2: CGPoint(x: 294, y: 640))
+        headPath.addCurve(to: CGPoint(x: 512, y: 236), control1: CGPoint(x: 294, y: 330), control2: CGPoint(x: 374, y: 236))
+        headPath.closeSubpath()
+        return headPath
+    }
+}
+
+/// Straight, heavy bangs cut in one line across the forehead, falling to
+/// short sideburns that meet the beard.
+struct HairShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var hairPath = Path()
+        hairPath.move(to: CGPoint(x: 278, y: 500))
+        // Up the left side and over the crown, a little outside the head for volume
+        hairPath.addCurve(to: CGPoint(x: 512, y: 214), control1: CGPoint(x: 268, y: 330), control2: CGPoint(x: 360, y: 214))
+        hairPath.addCurve(to: CGPoint(x: 746, y: 500), control1: CGPoint(x: 664, y: 214), control2: CGPoint(x: 756, y: 330))
+        // The right sideburn, then the fringe: one straight cut, slightly tilted
+        hairPath.addLine(to: CGPoint(x: 706, y: 500))
+        hairPath.addLine(to: CGPoint(x: 700, y: 392))
+        // A few strands along the cut, so it reads as hair rather than a helmet
+        for (strandX, strandY) in [(652.0, 405.0), (612.0, 397.0), (556.0, 407.0), (500.0, 398.0), (444.0, 407.0), (392.0, 399.0)] {
+            hairPath.addLine(to: CGPoint(x: strandX, y: strandY))
         }
-        var pointerPath = Path()
-        pointerPath.move(to: point(0, -0.9))
-        pointerPath.addLine(to: point(0.56, 0.78))
-        pointerPath.addLine(to: point(0, 0.42))
-        pointerPath.addLine(to: point(-0.56, 0.78))
-        pointerPath.closeSubpath()
-        return pointerPath
+        hairPath.addLine(to: CGPoint(x: 330, y: 404))
+        hairPath.addLine(to: CGPoint(x: 318, y: 500))
+        hairPath.closeSubpath()
+        return hairPath
+    }
+}
+
+/// The chin curtain: from the sideburns down along the jaw and full under
+/// the chin, with the cheeks and upper lip shaved (no mustache).
+struct ChinCurtainBeardShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var beardPath = Path()
+        // Outer edge: just outside the jaw, hanging below the chin
+        beardPath.move(to: CGPoint(x: 290, y: 496))
+        beardPath.addCurve(to: CGPoint(x: 512, y: 850), control1: CGPoint(x: 288, y: 700), control2: CGPoint(x: 380, y: 850))
+        beardPath.addCurve(to: CGPoint(x: 734, y: 496), control1: CGPoint(x: 644, y: 850), control2: CGPoint(x: 736, y: 700))
+        // Inner edge: thin at the sideburns, a deep U under the mouth
+        beardPath.addLine(to: CGPoint(x: 702, y: 496))
+        beardPath.addCurve(to: CGPoint(x: 512, y: 742), control1: CGPoint(x: 700, y: 640), control2: CGPoint(x: 618, y: 742))
+        beardPath.addCurve(to: CGPoint(x: 322, y: 496), control1: CGPoint(x: 406, y: 742), control2: CGPoint(x: 324, y: 640))
+        beardPath.closeSubpath()
+        return beardPath
     }
 }
 
 struct AppIconArtwork: View {
+    private let hairAndBeardColors = [Color(red: 0.20, green: 0.15, blue: 0.11), Color(red: 0.09, green: 0.07, blue: 0.055)]
+    private let faceFeatureColor = Color(red: 0.06, green: 0.09, blue: 0.2)
+
     var body: some View {
         ZStack {
             // macOS icon grid: an 824pt body centered in 1024, continuous corners
             RoundedRectangle(cornerRadius: 186, style: .continuous)
-                .fill(LinearGradient(colors: [Color(red: 0.135, green: 0.15, blue: 0.145), Color(red: 0.055, green: 0.063, blue: 0.06)], startPoint: .top, endPoint: .bottom))
+                // Warm paper, like the screen Mose draws on, so the dark beard reads
+                .fill(LinearGradient(colors: [Color(red: 0.97, green: 0.94, blue: 0.88), Color(red: 0.90, green: 0.85, blue: 0.76)], startPoint: .top, endPoint: .bottom))
                 .overlay(
                     RoundedRectangle(cornerRadius: 186, style: .continuous)
-                        .strokeBorder(LinearGradient(colors: [Color.white.opacity(0.16), Color.white.opacity(0.03)], startPoint: .top, endPoint: .bottom), lineWidth: 3)
+                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 3)
                 )
                 .frame(width: 824, height: 824)
-                .shadow(color: .black.opacity(0.45), radius: 22, y: 12)
+                .shadow(color: .black.opacity(0.35), radius: 22, y: 12)
 
-            // The thing being pointed out: a small button on someone's screen
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .fill(Color(red: 0.25, green: 0.27, blue: 0.265))
-                .overlay(
-                    Capsule().fill(Color.white.opacity(0.55)).frame(width: 150, height: 22)
-                )
-                .frame(width: circledElementRect.width - 54, height: circledElementRect.height - 34)
-                .position(x: circledElementRect.midX, y: circledElementRect.midY)
+            // Ears, half under the sideburns
+            Ellipse().fill(Color(red: 0.16, green: 0.42, blue: 0.92)).frame(width: 56, height: 96).position(x: 292, y: 520)
+            Ellipse().fill(Color(red: 0.16, green: 0.42, blue: 0.92)).frame(width: 56, height: 96).position(x: 732, y: 520)
 
-            Canvas { context, _ in
-                context.scaleBy(x: ringScale, y: ringScale)
-                for stroke in ringDrawing.strokes {
-                    var ringPath = Path(); ringPath.addLines(stroke.points)
-                    context.drawLayer { glowContext in
-                        glowContext.addFilter(.shadow(color: Color(red: 1, green: 0.58, blue: 0).opacity(0.5), radius: 3))
-                        glowContext.stroke(ringPath, with: .color(ScreenSketchInkColor.orange.swiftUIColor), style: StrokeStyle(lineWidth: 5.6, lineCap: .round, lineJoin: .round))
-                    }
-                }
+            // The face, in the cursor's blue with its glow
+            HeadShape()
+                .fill(LinearGradient(colors: [Color(red: 0.38, green: 0.62, blue: 1.0), DS.Colors.overlayCursorBlue, Color(red: 0.13, green: 0.36, blue: 0.86)], startPoint: .top, endPoint: .bottom))
+                .shadow(color: Color.black.opacity(0.18), radius: 14, y: 8)
+
+            // A deadpan stare: two small eyes under the fringe, a flat mouth
+            Group {
+                Ellipse().fill(faceFeatureColor).frame(width: 46, height: 34).position(x: 440, y: 478)
+                Ellipse().fill(faceFeatureColor).frame(width: 46, height: 34).position(x: 584, y: 478)
+                Capsule().fill(faceFeatureColor).frame(width: 92, height: 16).position(x: 512, y: 650)
             }
-            .frame(width: 1024, height: 1024)
 
-            // The cursor, just below and right of the ring, pointing at it
-            NotchedPointerShape()
-                .fill(DS.Colors.overlayCursorBlue)
-                .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.85), radius: 30)
-                .frame(width: 250, height: 250)
-                .rotationEffect(.degrees(-40))
-                .position(x: 660, y: 650)
+            ChinCurtainBeardShape()
+                .fill(LinearGradient(colors: hairAndBeardColors, startPoint: .top, endPoint: .bottom))
+            HairShape()
+                .fill(LinearGradient(colors: hairAndBeardColors, startPoint: .top, endPoint: .bottom))
         }
         .frame(width: 1024, height: 1024)
     }

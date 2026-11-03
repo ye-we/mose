@@ -16,6 +16,8 @@ import SwiftUI
 
 extension Notification.Name {
     static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
+    /// Opens the panel (the app menu's Settings… item).
+    static let clickyShowPanel = Notification.Name("clickyShowPanel")
 }
 
 /// Custom NSPanel subclass that can become the key window even with

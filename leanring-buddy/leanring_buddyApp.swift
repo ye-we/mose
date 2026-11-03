@@ -2,9 +2,10 @@
 //  leanring_buddyApp.swift
 //  leanring-buddy
 //
-//  Menu bar-only companion app. No dock icon, no main window — just an
-//  always-available status item in the macOS menu bar. Clicking the icon
-//  opens a floating panel with companion voice controls.
+//  Companion app with a Dock icon and a small menu bar icon, and no main
+//  window. Clicking either one opens a floating panel with companion voice
+//  controls; right-clicking the Dock icon quits it like any app. (It used to
+//  be menu bar only, but on notch Macs the tiny icon was easy to lose.)
 //
 
 import ServiceManagement
@@ -16,11 +17,19 @@ struct leanring_buddyApp: App {
     @NSApplicationDelegateAdaptor(CompanionAppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // The app lives entirely in the menu bar panel managed by the AppDelegate.
-        // This empty Settings scene satisfies SwiftUI's requirement for at least
-        // one scene but is never shown (LSUIElement=true removes the app menu).
+        // The app lives in the panel managed by the AppDelegate. This empty
+        // Settings scene satisfies SwiftUI's requirement for at least one
+        // scene; its menu item opens the panel instead, where the settings are.
         Settings {
             EmptyView()
+        }
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    NotificationCenter.default.post(name: .clickyShowPanel, object: nil)
+                }
+                .keyboardShortcut(",")
+            }
         }
     }
 }
@@ -37,6 +46,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var openConversationHistoryObserver: NSObjectProtocol?
     private var connectedAppsWindowController: ConnectedAppsWindowController?
     private var openConnectedAppsObserver: NSObjectProtocol?
+    private var showPanelObserver: NSObjectProtocol?
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -52,6 +62,13 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         ClickyAnalytics.trackAppOpened()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
+        showPanelObserver = NotificationCenter.default.addObserver(
+            forName: .clickyShowPanel,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.menuBarPanelManager?.showPanelFromReopen() }
+        }
         let setupWindowController = SetupWindowController(companionManager: companionManager)
         self.setupWindowController = setupWindowController
         openSetupObserver = NotificationCenter.default.addObserver(
@@ -97,9 +114,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         // startSparkleUpdater()
     }
 
-    /// Opening Clicky again (Spotlight, Finder, Launchpad) while it's running
-    /// brings it up: setup if that isn't finished, otherwise the panel. That
-    /// keeps it reachable when the menu bar is too full to show its icon.
+    /// Clicking the Dock icon, or opening Clicky again (Spotlight, Finder,
+    /// Launchpad) while it's running, brings it up: setup if that isn't
+    /// finished, otherwise the panel.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !companionManager.hasCompletedOnboarding || setupWindowController?.isShowingSetup == true {
             setupWindowController?.showSetup()

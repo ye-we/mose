@@ -19,9 +19,15 @@ import CoreGraphics
 
 @MainActor
 enum DevilModeEventPoster {
-    /// Where Mose last put the mouse (Quartz global coordinates). The takeover
-    /// monitor ignores mouse moves that land here even if they aren't marked.
-    private(set) static var lastPostedQuartzMouseLocation: CGPoint?
+    /// Where the mouse should be (Quartz global coordinates): where Mose last
+    /// put it, or where it was when the run started. The takeover monitor
+    /// only counts the user's mouse as moving once it gets away from here.
+    private(set) static var expectedQuartzMouseLocation: CGPoint?
+
+    /// A run is starting: the pointer belongs where the user left it.
+    static func expectMouseToStayWhereItIs() {
+        expectedQuartzMouseLocation = CGEvent(source: nil)?.location
+    }
 
     /// Short pauses between the events of one action, so apps see a mouse
     /// that moved, then pressed, then let go, like a hand.
@@ -41,7 +47,7 @@ enum DevilModeEventPoster {
         event.setIntegerValueField(.eventSourceUserData, value: DevilModeEventMark.eventSourceUserData)
         event.post(tap: .cghidEventTap)
         if [.mouseMoved, .leftMouseDown, .leftMouseUp, .leftMouseDragged, .rightMouseDown, .rightMouseUp].contains(event.type) {
-            lastPostedQuartzMouseLocation = event.location
+            expectedQuartzMouseLocation = event.location
         }
     }
 
@@ -246,17 +252,25 @@ final class DevilModeTakeoverMonitor {
         case userMovedMouse = "moved the mouse"
         case userClicked = "clicked"
         case userScrolled = "scrolled"
+
+        /// Said when the run stops, with the reason, so a stop the user
+        /// didn't mean to cause can be told apart.
+        var spokenStopNotice: String {
+            switch self {
+            case .escapeKey: return "Stopped."
+            case .userMovedMouse: return "Stopped, you moved the mouse."
+            case .userClicked: return "Stopped, you clicked."
+            case .userScrolled: return "Stopped, you scrolled."
+            }
+        }
     }
 
-    /// Called on the main thread, once per takeover.
-    var onUserTookOver: ((TakeoverReason) -> Void)?
+    /// Called on the main thread, once per takeover, with the reason and the
+    /// event's details for the log.
+    var onUserTookOver: ((TakeoverReason, String) -> Void)?
 
     private var eventTap: CFMachPort?
     private var eventTapRunLoopSource: CFRunLoopSource?
-
-    /// How far an unmarked mouse move may be from where Mose last put the
-    /// mouse before it counts as the user's hand.
-    private static let userMouseMoveToleranceInPoints: CGFloat = 6
 
     var isRunning: Bool { eventTap != nil }
 
@@ -315,7 +329,13 @@ final class DevilModeTakeoverMonitor {
             }
             return
         }
-        guard event.getIntegerValueField(.eventSourceUserData) != DevilModeEventMark.eventSourceUserData else { return }
+        let eventSourceProcessIdentifier = event.getIntegerValueField(.eventSourceUnixProcessID)
+        guard !DevilModeTakeoverRule.isMosesOwnEvent(
+            eventSourceUserData: event.getIntegerValueField(.eventSourceUserData),
+            eventSourceProcessIdentifier: eventSourceProcessIdentifier,
+            ownProcessIdentifier: ProcessInfo.processInfo.processIdentifier
+        ) else { return }
+        let expectedQuartzMouseLocation = MainActor.assumeIsolated { DevilModeEventPoster.expectedQuartzMouseLocation }
 
         let takeoverReason: TakeoverReason?
         switch eventType {
@@ -323,13 +343,10 @@ final class DevilModeTakeoverMonitor {
             let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
             takeoverReason = keyCode == DevilModeKeyShortcutParser.escapeKeyCode ? .escapeKey : nil
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged:
-            let lastPostedQuartzMouseLocation = MainActor.assumeIsolated { DevilModeEventPoster.lastPostedQuartzMouseLocation }
-            if let lastPostedQuartzMouseLocation,
-               hypot(event.location.x - lastPostedQuartzMouseLocation.x, event.location.y - lastPostedQuartzMouseLocation.y) <= Self.userMouseMoveToleranceInPoints {
-                takeoverReason = nil
-            } else {
-                takeoverReason = .userMovedMouse
-            }
+            let isUserMovingTheMouse = expectedQuartzMouseLocation.map {
+                DevilModeTakeoverRule.isUserMovingTheMouse(eventLocation: event.location, expectedMouseLocation: $0)
+            } ?? true
+            takeoverReason = isUserMovingTheMouse ? .userMovedMouse : nil
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             takeoverReason = .userClicked
         case .scrollWheel:
@@ -338,6 +355,8 @@ final class DevilModeTakeoverMonitor {
             takeoverReason = nil
         }
         guard let takeoverReason else { return }
-        onUserTookOver?(takeoverReason)
+        let expectedLocationText = expectedQuartzMouseLocation.map { "(\(Int($0.x)),\(Int($0.y)))" } ?? "unknown"
+        let eventDetails = "event type \(eventType.rawValue) at (\(Int(event.location.x)),\(Int(event.location.y))), mouse expected at \(expectedLocationText), from process \(eventSourceProcessIdentifier)"
+        onUserTookOver?(takeoverReason, eventDetails)
     }
 }

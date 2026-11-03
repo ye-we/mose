@@ -513,7 +513,7 @@ struct SetupView: View {
     private var footer: some View {
         HStack {
             if isEverythingDone {
-                Text("\(AppIdentity.displayName) is in your menu bar whenever you need it.")
+                Text("\(AppIdentity.displayName) is in your Dock whenever you need it.")
                     .font(.system(size: 12))
                     .foregroundColor(DS.Colors.textTertiary)
             }

@@ -1188,6 +1188,16 @@ do {
     let keystrokeUnits = DevilModeTyping.keystrokeUnits(of: "hé👍")
     check(keystrokeUnits.count == 3 && keystrokeUnits[2].count == 2, "an emoji goes out as one key event of two UTF-16 units")
     check(DevilModeEventMark.eventSourceUserData == 0x4D6F7365, "Mose's events are marked \"Mose\"")
+
+    let pointerAtRest = CGPoint(x: 500, y: 300)
+    check(!DevilModeTakeoverRule.isUserMovingTheMouse(eventLocation: CGPoint(x: 501, y: 299), expectedMouseLocation: pointerAtRest), "a hand resting on the mouse twitching a point doesn't stop a run")
+    check(!DevilModeTakeoverRule.isUserMovingTheMouse(eventLocation: CGPoint(x: 508, y: 306), expectedMouseLocation: pointerAtRest), "nor a few points")
+    check(!DevilModeTakeoverRule.isUserMovingTheMouse(eventLocation: CGPoint(x: 499, y: 316), expectedMouseLocation: pointerAtRest), "nor a 16-point nudge (one stopped a real run)")
+    check(DevilModeTakeoverRule.isUserMovingTheMouse(eventLocation: CGPoint(x: 560, y: 300), expectedMouseLocation: pointerAtRest), "a real move does")
+    check(DevilModeTakeoverRule.isMosesOwnEvent(eventSourceUserData: DevilModeEventMark.eventSourceUserData, eventSourceProcessIdentifier: 0, ownProcessIdentifier: 42), "a marked event is Mose's")
+    check(DevilModeTakeoverRule.isMosesOwnEvent(eventSourceUserData: 0, eventSourceProcessIdentifier: 42, ownProcessIdentifier: 42), "so is one from Mose's own process, even if the mark was lost")
+    check(!DevilModeTakeoverRule.isMosesOwnEvent(eventSourceUserData: 0, eventSourceProcessIdentifier: 0, ownProcessIdentifier: 42), "a hardware event is the user's")
+    check(!DevilModeTakeoverRule.isMosesOwnEvent(eventSourceUserData: 0, eventSourceProcessIdentifier: 777, ownProcessIdentifier: 42), "so is one another app posted")
 }
 
 print("\(checkCount - failureCount)/\(checkCount) checks passed")

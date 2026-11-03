@@ -1276,11 +1276,13 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         }
-        devilModeTakeoverMonitor.onUserTookOver = { [weak self] takeoverReason in
+        devilModeTakeoverMonitor.onUserTookOver = { [weak self] takeoverReason, eventDetails in
             MainActor.assumeIsolated {
-                self?.handleDevilModeTakeover(takeoverReason)
+                self?.handleDevilModeTakeover(takeoverReason, eventDetails: eventDetails)
             }
         }
+        // Until Mose moves it, the pointer belongs where the user left it
+        DevilModeEventPoster.expectMouseToStayWhereItIs()
         devilModeTakeoverMonitor.start()
     }
 
@@ -1306,9 +1308,9 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Esc, or the user's own mouse: everything stops at once.
-    private func handleDevilModeTakeover(_ takeoverReason: DevilModeTakeoverMonitor.TakeoverReason) {
+    private func handleDevilModeTakeover(_ takeoverReason: DevilModeTakeoverMonitor.TakeoverReason, eventDetails: String) {
         guard isDevilModeDriving else { return }
-        print("😈 Devil mode stopped: the user \(takeoverReason.rawValue)")
+        print("😈 Devil mode stopped: the user \(takeoverReason.rawValue) (\(eventDetails))")
         currentResponseTask?.cancel()
         currentResponseTask = nil
         sentenceSpeaker.stopSpeaking()
@@ -1317,7 +1319,7 @@ final class CompanionManager: ObservableObject {
         if voiceState == .processing || voiceState == .responding {
             voiceState = .idle
         }
-        speakConversationConfirmation("Stopped.")
+        speakConversationConfirmation(takeoverReason.spokenStopNotice)
     }
 
     /// The user's next push-to-talk after "should I…?" is their answer: a yes
