@@ -300,6 +300,8 @@ final class CompanionManager: ObservableObject {
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
+    /// Rebuilds the overlay when a display is connected, removed or resized.
+    private var screenParametersObserver: NSObjectProtocol?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
@@ -451,6 +453,15 @@ final class CompanionManager: ObservableObject {
         bindAudioPowerLevel()
         bindShortcutTransitions()
         startSketchClearingInputMonitor()
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.rebuildOverlayForCurrentScreens()
+            }
+        }
         if Self.externalBridgeBaseURL != nil {
             Task { await useBridgeVoiceIfConfigured() }
         }
@@ -480,6 +491,16 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         }
+    }
+
+    /// The overlay is one window per display, made when it's shown. A monitor
+    /// plugged in later (or a resolution change) would otherwise have no
+    /// cursor or drawings, so the windows are made again for the new screens.
+    private func rebuildOverlayForCurrentScreens() {
+        guard isOverlayVisible else { return }
+        print("🖥️ Screens changed: overlay on \(NSScreen.screens.count) screen(s)")
+        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+        overlayWindowManager.setAcceptsMouseInput(isAcceptingUserInk)
     }
 
     func clearDetectedElementLocation() {
@@ -1629,6 +1650,10 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+            self.screenParametersObserver = nil
+        }
         answerVisualTagResolutionChain?.cancel()
         sentenceSpeaker.stopSpeaking()
         sketchIdleClearTask?.cancel()

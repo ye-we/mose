@@ -11,12 +11,15 @@ import AppKit
 import AVFoundation
 import SwiftUI
 
-class OverlayWindow: NSWindow {
+/// A non-activating panel rather than a plain window: since Mose has a Dock
+/// icon (a regular app, not an agent), macOS only lets a non-activating panel
+/// of its sit over another app's full-screen space.
+class OverlayWindow: NSPanel {
     init(screen: NSScreen) {
         // Create window covering entire screen
         super.init(
             contentRect: screen.frame,
-            styleMask: .borderless,
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -328,8 +331,13 @@ struct BlueCursorView: View {
             // During cursor following: fast spring animation for snappy tracking.
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
-            Triangle()
-                .fill(DS.Colors.overlayCursorBlue)
+            // Mose's face on it (beard and eyes, as on the app icon). Same
+            // triangle underneath, so the pen tip used for drawing is unchanged.
+            ZStack {
+                Triangle()
+                    .fill(DS.Colors.overlayCursorBlue)
+                BeardedCursorFaceView()
+            }
                 .frame(width: 16, height: 16)
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)

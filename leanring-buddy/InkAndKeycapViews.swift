@@ -180,6 +180,84 @@ struct CompanionCursorMark: View {
     }
 }
 
+// MARK: - Mose's face on the cursor
+
+/// Places points on an upright equilateral triangle filling `rect`, centred
+/// on its centroid the way the overlay's `Triangle` draws the cursor. Points
+/// are in the app icon's cursor units (tip at y = -0.92, base at y = 0.5,
+/// base corners at x = ±0.8), so the face matches the icon.
+struct BeardedCursorGeometry {
+    let rect: CGRect
+
+    var triangleSide: CGFloat { min(rect.width, rect.height) }
+    var triangleHeight: CGFloat { triangleSide * sqrt(3.0) / 2.0 }
+    /// How many points one horizontal unit is.
+    var horizontalUnit: CGFloat { (triangleSide / 2) / 0.8 }
+
+    func point(_ unitX: CGFloat, _ unitY: CGFloat) -> CGPoint {
+        CGPoint(
+            x: rect.midX + unitX * horizontalUnit,
+            y: rect.midY + triangleHeight / 3 + (unitY - 0.5) * (triangleHeight / 1.42)
+        )
+    }
+}
+
+/// The chin curtain on the cursor: short sideburns up the sides, round the
+/// base corners and a little below the base, the face above it bare.
+struct BeardedCursorBeardShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let cursorGeometry = BeardedCursorGeometry(rect: rect)
+        func point(_ unitX: CGFloat, _ unitY: CGFloat) -> CGPoint { cursorGeometry.point(unitX, unitY) }
+        var beardPath = Path()
+        beardPath.move(to: point(-0.64, 0.18))
+        beardPath.addLine(to: point(-0.85, 0.5))
+        beardPath.addCurve(to: point(0, 0.68), control1: point(-0.78, 0.66), control2: point(-0.34, 0.68))
+        beardPath.addCurve(to: point(0.85, 0.5), control1: point(0.34, 0.68), control2: point(0.78, 0.66))
+        beardPath.addLine(to: point(0.64, 0.18))
+        beardPath.addLine(to: point(0.53, 0.18))
+        beardPath.addCurve(to: point(0, 0.42), control1: point(0.5, 0.36), control2: point(0.24, 0.42))
+        beardPath.addCurve(to: point(-0.53, 0.18), control1: point(-0.24, 0.42), control2: point(-0.5, 0.36))
+        beardPath.closeSubpath()
+        return beardPath
+    }
+}
+
+/// Mose's face, drawn over the blue cursor triangle in the same frame: the
+/// beard, two eyes, and stern brows once the cursor is big enough for them
+/// to read. Eyes are drawn larger than the icon's at small sizes, or they'd
+/// vanish on a 16-point cursor.
+struct BeardedCursorFaceView: View {
+    static let beardDarkBrown = Color(red: 0.085, green: 0.065, blue: 0.05)
+    static let beardBrown = Color(red: 0.24, green: 0.17, blue: 0.12)
+    private static let eyeColor = Color(red: 0.03, green: 0.06, blue: 0.16)
+
+    var body: some View {
+        GeometryReader { geometryProxy in
+            let cursorGeometry = BeardedCursorGeometry(rect: CGRect(origin: .zero, size: geometryProxy.size))
+            let isLargeEnoughForBrows = cursorGeometry.triangleSide >= 28
+            let eyeDiameter = max(cursorGeometry.horizontalUnit * 0.14, 2.3)
+            ZStack {
+                BeardedCursorBeardShape()
+                    .fill(LinearGradient(colors: [Self.beardBrown, Self.beardDarkBrown], startPoint: .top, endPoint: .bottom))
+                ForEach([-1.0, 1.0], id: \.self) { side in
+                    Ellipse()
+                        .fill(Self.eyeColor)
+                        .frame(width: eyeDiameter, height: eyeDiameter * 0.82)
+                        .position(cursorGeometry.point(side * 0.22, -0.08))
+                    if isLargeEnoughForBrows {
+                        Capsule()
+                            .fill(Self.beardDarkBrown)
+                            .frame(width: cursorGeometry.horizontalUnit * 0.22, height: cursorGeometry.horizontalUnit * 0.06)
+                            .rotationEffect(.degrees(side * -9))
+                            .position(cursorGeometry.point(side * 0.2, -0.21))
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 // MARK: - Keycaps
 
 /// One key of a shortcut, drawn like a real key. It sinks and lights up

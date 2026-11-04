@@ -1,11 +1,11 @@
 //
 //  scripts/app-icon/main.swift
 //
-//  Draws the app icon: Mose, a mascot head in the companion's cursor blue
-//  with straight dark bangs, a deadpan stare and a chin-curtain beard (a
-//  full beard along the jaw, no mustache), the look Mose is named after.
-//  It's a mascot, not anyone's likeness. Run scripts/render-app-icon.sh to
-//  write every size into the asset catalog.
+//  Draws the app icon: Mose's blue cursor as a character, tilted the way the
+//  cursor sits on screen, with stern brows, a deadpan stare and a chin-curtain
+//  beard along its jaw (a full beard with no mustache, the look Mose is named
+//  after), on a light background. Run scripts/render-app-icon.sh to write
+//  every size into the asset catalog.
 //
 
 import AppKit
@@ -14,100 +14,143 @@ import SwiftUI
 // Everything is laid out on the 1024 canvas; the icon body is the 824pt
 // rounded square in the middle (the macOS icon grid).
 
-/// The head: wide at the temples, narrowing to a rounded jaw.
-struct HeadShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var headPath = Path()
-        headPath.move(to: CGPoint(x: 512, y: 236))
-        // Crown to the temples
-        headPath.addCurve(to: CGPoint(x: 730, y: 470), control1: CGPoint(x: 650, y: 236), control2: CGPoint(x: 730, y: 330))
-        // Down the cheek to the jaw
-        headPath.addCurve(to: CGPoint(x: 512, y: 800), control1: CGPoint(x: 730, y: 640), control2: CGPoint(x: 640, y: 800))
-        headPath.addCurve(to: CGPoint(x: 294, y: 470), control1: CGPoint(x: 384, y: 800), control2: CGPoint(x: 294, y: 640))
-        headPath.addCurve(to: CGPoint(x: 512, y: 236), control1: CGPoint(x: 294, y: 330), control2: CGPoint(x: 374, y: 236))
-        headPath.closeSubpath()
-        return headPath
+/// Places points given on a unit canvas (the cursor's own coordinates,
+/// tip at y = -0.92, base at y = 0.5) onto the 1024 icon canvas.
+struct CursorCanvasPlacement {
+    let centerX: CGFloat
+    let centerY: CGFloat
+    let scale: CGFloat
+
+    func point(_ unitX: CGFloat, _ unitY: CGFloat) -> CGPoint {
+        CGPoint(x: centerX + unitX * scale, y: centerY + unitY * scale)
     }
 }
 
-/// Straight, heavy bangs cut in one line across the forehead, falling to
-/// short sideburns that meet the beard.
-struct HairShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var hairPath = Path()
-        hairPath.move(to: CGPoint(x: 278, y: 500))
-        // Up the left side and over the crown, a little outside the head for volume
-        hairPath.addCurve(to: CGPoint(x: 512, y: 214), control1: CGPoint(x: 268, y: 330), control2: CGPoint(x: 360, y: 214))
-        hairPath.addCurve(to: CGPoint(x: 746, y: 500), control1: CGPoint(x: 664, y: 214), control2: CGPoint(x: 756, y: 330))
-        // The right sideburn, then the fringe: one straight cut, slightly tilted
-        hairPath.addLine(to: CGPoint(x: 706, y: 500))
-        hairPath.addLine(to: CGPoint(x: 700, y: 392))
-        // A few strands along the cut, so it reads as hair rather than a helmet
-        for (strandX, strandY) in [(652.0, 405.0), (612.0, 397.0), (556.0, 407.0), (500.0, 398.0), (444.0, 407.0), (392.0, 399.0)] {
-            hairPath.addLine(to: CGPoint(x: strandX, y: strandY))
-        }
-        hairPath.addLine(to: CGPoint(x: 330, y: 404))
-        hairPath.addLine(to: CGPoint(x: 318, y: 500))
-        hairPath.closeSubpath()
-        return hairPath
-    }
+let cursorPlacement = CursorCanvasPlacement(centerX: 520, centerY: 480, scale: 330)
+let cursorTiltDegrees: Double = -20
+
+/// The cursor: a triangle pointing up, with softly rounded corners.
+func cursorTrianglePath(_ placement: CursorCanvasPlacement) -> Path {
+    let tipVertex = placement.point(0, -0.92)
+    let rightBaseVertex = placement.point(0.8, 0.5)
+    let leftBaseVertex = placement.point(-0.8, 0.5)
+    var trianglePath = Path()
+    trianglePath.move(to: CGPoint(x: (tipVertex.x + leftBaseVertex.x) / 2, y: (tipVertex.y + leftBaseVertex.y) / 2))
+    trianglePath.addArc(tangent1End: tipVertex, tangent2End: rightBaseVertex, radius: 37)
+    trianglePath.addArc(tangent1End: rightBaseVertex, tangent2End: leftBaseVertex, radius: 46)
+    trianglePath.addArc(tangent1End: leftBaseVertex, tangent2End: tipVertex, radius: 46)
+    trianglePath.closeSubpath()
+    return trianglePath
 }
 
-/// The chin curtain: from the sideburns down along the jaw and full under
-/// the chin, with the cheeks and upper lip shaved (no mustache).
-struct ChinCurtainBeardShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var beardPath = Path()
-        // Outer edge: just outside the jaw, hanging below the chin
-        beardPath.move(to: CGPoint(x: 290, y: 496))
-        beardPath.addCurve(to: CGPoint(x: 512, y: 850), control1: CGPoint(x: 288, y: 700), control2: CGPoint(x: 380, y: 850))
-        beardPath.addCurve(to: CGPoint(x: 734, y: 496), control1: CGPoint(x: 644, y: 850), control2: CGPoint(x: 736, y: 700))
-        // Inner edge: thin at the sideburns, a deep U under the mouth
-        beardPath.addLine(to: CGPoint(x: 702, y: 496))
-        beardPath.addCurve(to: CGPoint(x: 512, y: 742), control1: CGPoint(x: 700, y: 640), control2: CGPoint(x: 618, y: 742))
-        beardPath.addCurve(to: CGPoint(x: 322, y: 496), control1: CGPoint(x: 406, y: 742), control2: CGPoint(x: 324, y: 640))
-        beardPath.closeSubpath()
-        return beardPath
+/// The chin curtain: short sideburns up the two sides, round the base
+/// corners and a little below the base, with the cheeks and upper lip bare.
+func chinCurtainBeardPath(_ placement: CursorCanvasPlacement) -> Path {
+    var beardPath = Path()
+    // Outer edge
+    beardPath.move(to: placement.point(-0.64, 0.18))
+    beardPath.addLine(to: placement.point(-0.85, 0.5))
+    beardPath.addCurve(to: placement.point(0, 0.68), control1: placement.point(-0.78, 0.66), control2: placement.point(-0.34, 0.68))
+    beardPath.addCurve(to: placement.point(0.85, 0.5), control1: placement.point(0.34, 0.68), control2: placement.point(0.78, 0.66))
+    beardPath.addLine(to: placement.point(0.64, 0.18))
+    // Inner edge: thin at the sideburns, a U under the mouth
+    beardPath.addLine(to: placement.point(0.53, 0.18))
+    beardPath.addCurve(to: placement.point(0, 0.45), control1: placement.point(0.5, 0.38), control2: placement.point(0.24, 0.45))
+    beardPath.addCurve(to: placement.point(-0.53, 0.18), control1: placement.point(-0.24, 0.45), control2: placement.point(-0.5, 0.38))
+    beardPath.closeSubpath()
+    return beardPath
+}
+
+/// Wavy strands drawn over the beard (clipped to it), so it reads as hair.
+func beardStrandsPath() -> Path {
+    var strandsPath = Path()
+    var strandX: CGFloat = 150
+    var strandIndex = 0
+    while strandX <= 880 {
+        let swayDirection: CGFloat = strandIndex % 2 == 0 ? 1 : -1
+        strandsPath.move(to: CGPoint(x: strandX, y: 300))
+        strandsPath.addCurve(
+            to: CGPoint(x: strandX + swayDirection * 4.8, y: 900),
+            control1: CGPoint(x: strandX + swayDirection * 12, y: 500),
+            control2: CGPoint(x: strandX - swayDirection * 12, y: 700)
+        )
+        strandX += 20
+        strandIndex += 1
     }
+    return strandsPath
 }
 
 struct AppIconArtwork: View {
-    private let hairAndBeardColors = [Color(red: 0.20, green: 0.15, blue: 0.11), Color(red: 0.09, green: 0.07, blue: 0.055)]
-    private let faceFeatureColor = Color(red: 0.06, green: 0.09, blue: 0.2)
+    private let cursorGlowBlue = Color(red: 0.2, green: 0.5, blue: 1.0)
+    private let featureColor = Color(red: 0.03, green: 0.06, blue: 0.16)
+    private let beardDarkBrown = Color(red: 0.085, green: 0.065, blue: 0.05)
+    private let beardBrown = Color(red: 0.24, green: 0.17, blue: 0.12)
+    private let beardStrandBrown = Color(red: 0.42, green: 0.31, blue: 0.22)
 
     var body: some View {
         ZStack {
             // macOS icon grid: an 824pt body centered in 1024, continuous corners
             RoundedRectangle(cornerRadius: 186, style: .continuous)
-                // Warm paper, like the screen Mose draws on, so the dark beard reads
-                .fill(LinearGradient(colors: [Color(red: 0.97, green: 0.94, blue: 0.88), Color(red: 0.90, green: 0.85, blue: 0.76)], startPoint: .top, endPoint: .bottom))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 186, style: .continuous)
-                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 3)
-                )
+                .fill(RadialGradient(
+                    colors: [Color(red: 1.0, green: 0.98, blue: 0.94), Color(red: 0.88, green: 0.9, blue: 0.95)],
+                    center: UnitPoint(x: 0.45, y: 0.3), startRadius: 40, endRadius: 640))
                 .frame(width: 824, height: 824)
                 .shadow(color: .black.opacity(0.35), radius: 22, y: 12)
 
-            // Ears, half under the sideburns
-            Ellipse().fill(Color(red: 0.16, green: 0.42, blue: 0.92)).frame(width: 56, height: 96).position(x: 292, y: 520)
-            Ellipse().fill(Color(red: 0.16, green: 0.42, blue: 0.92)).frame(width: 56, height: 96).position(x: 732, y: 520)
+            ZStack {
+                // The cursor, in its blue, with its glow
+                cursorTrianglePath(cursorPlacement)
+                    .fill(LinearGradient(
+                        colors: [Color(red: 0.52, green: 0.74, blue: 1.0), cursorGlowBlue, Color(red: 0.1, green: 0.31, blue: 0.84)],
+                        startPoint: UnitPoint(x: 0.35, y: 0.15), endPoint: UnitPoint(x: 0.6, y: 0.8)))
+                    .shadow(color: cursorGlowBlue.opacity(0.35), radius: 18)
+                // A soft highlight along its edges
+                cursorTrianglePath(cursorPlacement)
+                    .stroke(Color.white.opacity(0.35), lineWidth: 10)
+                    .blur(radius: 6)
+                    .mask(cursorTrianglePath(cursorPlacement))
 
-            // The face, in the cursor's blue with its glow
-            HeadShape()
-                .fill(LinearGradient(colors: [Color(red: 0.38, green: 0.62, blue: 1.0), DS.Colors.overlayCursorBlue, Color(red: 0.13, green: 0.36, blue: 0.86)], startPoint: .top, endPoint: .bottom))
-                .shadow(color: Color.black.opacity(0.18), radius: 14, y: 8)
+                // Stern brows (inner ends lower), deadpan eyes with a catchlight, a flat mouth
+                ForEach([-1.0, 1.0], id: \.self) { side in
+                    Capsule()
+                        .fill(beardDarkBrown)
+                        .frame(width: cursorPlacement.scale * 0.22, height: cursorPlacement.scale * 0.06)
+                        .rotationEffect(.degrees(side * -9))
+                        .position(cursorPlacement.point(side * 0.2, -0.19))
+                    ZStack {
+                        Ellipse()
+                            .fill(featureColor)
+                            .frame(width: cursorPlacement.scale * 0.13, height: cursorPlacement.scale * 0.1)
+                        Circle()
+                            .fill(Color.white.opacity(0.92))
+                            .frame(width: cursorPlacement.scale * 0.035, height: cursorPlacement.scale * 0.035)
+                            .offset(x: -cursorPlacement.scale * 0.025, y: -cursorPlacement.scale * 0.02)
+                    }
+                    .position(cursorPlacement.point(side * 0.2, -0.06))
+                }
+                Capsule()
+                    .fill(featureColor)
+                    .frame(width: cursorPlacement.scale * 0.22, height: cursorPlacement.scale * 0.042)
+                    .position(cursorPlacement.point(0, 0.27))
 
-            // A deadpan stare: two small eyes under the fringe, a flat mouth
-            Group {
-                Ellipse().fill(faceFeatureColor).frame(width: 46, height: 34).position(x: 440, y: 478)
-                Ellipse().fill(faceFeatureColor).frame(width: 46, height: 34).position(x: 584, y: 478)
-                Capsule().fill(faceFeatureColor).frame(width: 92, height: 16).position(x: 512, y: 650)
+                ZStack {
+                    chinCurtainBeardPath(cursorPlacement)
+                        .fill(LinearGradient(colors: [beardBrown, beardDarkBrown], startPoint: .top, endPoint: .bottom))
+                    beardStrandsPath()
+                        .stroke(beardStrandBrown.opacity(0.22), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                }
+                .mask(chinCurtainBeardPath(cursorPlacement))
             }
+            .frame(width: 1024, height: 1024)
+            // Tilted like the cursor on screen
+            .rotationEffect(.degrees(cursorTiltDegrees), anchor: UnitPoint(x: cursorPlacement.centerX / 1024, y: cursorPlacement.centerY / 1024))
+            .offset(x: 10, y: 20)
+            .mask(RoundedRectangle(cornerRadius: 186, style: .continuous).frame(width: 824, height: 824))
 
-            ChinCurtainBeardShape()
-                .fill(LinearGradient(colors: hairAndBeardColors, startPoint: .top, endPoint: .bottom))
-            HairShape()
-                .fill(LinearGradient(colors: hairAndBeardColors, startPoint: .top, endPoint: .bottom))
+            // A faint rim, as macOS icons have
+            RoundedRectangle(cornerRadius: 186, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.07), lineWidth: 3)
+                .frame(width: 824, height: 824)
         }
         .frame(width: 1024, height: 1024)
     }
