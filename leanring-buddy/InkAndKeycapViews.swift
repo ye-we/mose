@@ -137,46 +137,40 @@ struct InkMarkView: View {
 
 // MARK: - The companion's cursor
 
-/// The blue triangle Clicky follows the mouse with, drawn at any size. It's
-/// the app's mark: the menu bar icon is the same shape.
-struct CompanionCursorShape: Shape {
+/// The cursor triangle, upright: equilateral, centred on its centroid, the
+/// same shape as the overlay's cursor so Mose's face fits it the same way.
+struct UprightCursorTriangleShape: Shape {
     func path(in rect: CGRect) -> Path {
-        let triangleSide = min(rect.width, rect.height) * 0.78
+        let triangleSide = min(rect.width, rect.height)
         let triangleHeight = triangleSide * sqrt(3.0) / 2.0
-        let centerPoint = CGPoint(x: rect.midX, y: rect.midY)
-
-        // Pointing up-left like a mouse pointer: an upright triangle turned by -35 degrees
-        let rotationRadians = -35.0 * .pi / 180.0
-        func rotated(_ point: CGPoint) -> CGPoint {
-            let offsetX = point.x - centerPoint.x
-            let offsetY = point.y - centerPoint.y
-            return CGPoint(
-                x: centerPoint.x + CGFloat(cos(rotationRadians)) * offsetX - CGFloat(sin(rotationRadians)) * offsetY,
-                y: centerPoint.y + CGFloat(sin(rotationRadians)) * offsetX + CGFloat(cos(rotationRadians)) * offsetY
-            )
-        }
-        let topPoint = CGPoint(x: centerPoint.x, y: centerPoint.y - triangleHeight / 1.5)
-        let bottomLeftPoint = CGPoint(x: centerPoint.x - triangleSide / 2, y: centerPoint.y + triangleHeight / 3)
-        let bottomRightPoint = CGPoint(x: centerPoint.x + triangleSide / 2, y: centerPoint.y + triangleHeight / 3)
-
         var cursorPath = Path()
-        cursorPath.move(to: rotated(topPoint))
-        cursorPath.addLine(to: rotated(bottomLeftPoint))
-        cursorPath.addLine(to: rotated(bottomRightPoint))
+        cursorPath.move(to: CGPoint(x: rect.midX, y: rect.midY - triangleHeight / 1.5))
+        cursorPath.addLine(to: CGPoint(x: rect.midX - triangleSide / 2, y: rect.midY + triangleHeight / 3))
+        cursorPath.addLine(to: CGPoint(x: rect.midX + triangleSide / 2, y: rect.midY + triangleHeight / 3))
         cursorPath.closeSubpath()
         return cursorPath
     }
 }
 
+/// The app's mark at any size: Mose's blue cursor with its beard and eyes,
+/// pointing up-left like the cursor on screen. The panel header, setup,
+/// History, the step cards and the menu bar icon all use it.
 struct CompanionCursorMark: View {
     var markSize: CGFloat = 28
+    var hasGlow = true
 
     var body: some View {
-        CompanionCursorShape()
-            .fill(DS.Colors.overlayCursorBlue)
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.55), radius: markSize * 0.25)
-            .frame(width: markSize, height: markSize)
-            .accessibilityHidden(true)
+        let triangleSide = markSize * 0.78
+        ZStack {
+            UprightCursorTriangleShape()
+                .fill(DS.Colors.overlayCursorBlue)
+            BeardedCursorFaceView()
+        }
+        .frame(width: triangleSide, height: triangleSide)
+        .rotationEffect(.degrees(-35))
+        .shadow(color: DS.Colors.overlayCursorBlue.opacity(hasGlow ? 0.55 : 0), radius: markSize * 0.25)
+        .frame(width: markSize, height: markSize)
+        .accessibilityHidden(true)
     }
 }
 
@@ -227,8 +221,10 @@ struct BeardedCursorBeardShape: Shape {
 /// to read. Eyes are drawn larger than the icon's at small sizes, or they'd
 /// vanish on a 16-point cursor.
 struct BeardedCursorFaceView: View {
-    static let beardDarkBrown = Color(red: 0.085, green: 0.065, blue: 0.05)
-    static let beardBrown = Color(red: 0.24, green: 0.17, blue: 0.12)
+    // A warm mid brown rather than near black, so the beard still reads at
+    // menu bar size against dark menu bars, panels and screens
+    static let beardDarkBrown = Color(red: 0.3, green: 0.2, blue: 0.13)
+    static let beardBrown = Color(red: 0.5, green: 0.34, blue: 0.22)
     private static let eyeColor = Color(red: 0.03, green: 0.06, blue: 0.16)
 
     var body: some View {
