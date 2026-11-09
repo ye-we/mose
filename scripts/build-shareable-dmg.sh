@@ -2,10 +2,14 @@
 # Builds a copy of the app that other people can install, and wraps it in a
 # DMG with an Applications shortcut to drag it onto.
 #
-# It's signed with a free Apple Development certificate (any Apple ID added
-# to Xcode has one), not a paid Developer ID, so it isn't notarized: the
-# first time someone opens it, macOS says it can't check the app and they
+# The app is signed with a free Apple Development certificate (any Apple ID
+# added to Xcode has one), not a paid Developer ID, so it isn't notarized:
+# the first time someone opens it, macOS says it can't check the app and they
 # allow it once under System Settings → Privacy & Security → Open Anyway.
+# The DMG itself is left unsigned: macOS rejects a DMG signed with a
+# development certificate before it even opens (one more "Open Anyway"),
+# while an unsigned one opens straight away. Sparkle's EdDSA signature
+# (scripts/publish-release.sh) is what vouches for the DMG.
 # Because the signing identity stays the same from build to build, people
 # keep their permissions (Accessibility, Screen Recording) across updates.
 #
@@ -103,6 +107,5 @@ ln -s /Applications "$dmg_staging_folder/Applications"
 rm -f "$dmg_path"
 hdiutil create -volname "$product_name $marketing_version" -srcfolder "$dmg_staging_folder" -ov -format UDZO "$dmg_path" > /dev/null
 rm -rf "$dmg_staging_folder"
-codesign --sign "$signing_authority" "$dmg_path"
 
 echo "✅ $dmg_path ($(du -h "$dmg_path" | cut -f1))"

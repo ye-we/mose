@@ -107,6 +107,8 @@ check_dmg() {
   local dmg_path="$1" expected_version="$2" expected_build_number="$3" expected_public_key="$4"
   local mount_point app_path info_plist binary_path problem=""
   hdiutil verify "$dmg_path" > /dev/null 2>&1 || fail "hdiutil verify failed for $dmg_path"
+  # Gatekeeper refuses to open a DMG signed with a development certificate
+  if codesign -dv "$dmg_path" > /dev/null 2>&1; then fail "$dmg_path is code-signed; macOS would block it before it opens"; fi
   mount_point="$(mktemp -d)"
   hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mount_point" "$dmg_path" > /dev/null
   app_path="$mount_point/Mose.app"

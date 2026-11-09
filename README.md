@@ -23,7 +23,17 @@ Mose grew out of [Clicky](https://github.com/farzaa/clicky) by Farza, which is M
 
 You need macOS 14.2 or later and a Claude plan (Pro, Max, Team or Enterprise) for [Claude Code](https://claude.com/claude-code). If Claude Code isn't installed yet, Mose's setup installs it for you.
 
-1. [Download the DMG](https://github.com/ye-we/mose/releases/latest), open it and drag **Mose** into **Applications**.
+**The quick way**, in Terminal: paste this line and press Return.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ye-we/mose/main/install.sh | bash
+```
+
+It downloads the newest Mose from this repository's releases, checks that it's signed by Mose's developer, puts it in Applications and opens it. There's nothing to approve: macOS only asks about apps downloaded in a browser. [install.sh](install.sh) is short, if you'd like to read it first.
+
+**Or with the DMG:**
+
+1. [Download the DMG](https://github.com/ye-we/mose/releases/latest), open it and drag **Mose** into **Applications**. (1.2's DMG may not open at first: click **Done** and allow it as in step 3. Later DMGs open directly.)
 2. Open Mose. macOS says it can't verify the app, because it isn't notarized by Apple. Click **Done**.
 3. Open **System Settings → Privacy & Security**, scroll down to the message about Mose, click **Open Anyway** and confirm. You only do this once; updates Mose installs itself open normally.
 4. The setup window walks you through signing in to Claude Code, the permissions it needs, and saying hi once.
@@ -88,7 +98,7 @@ The panel (click Mose in the Dock) shows what Mose is doing and any background t
 1. Install and sign in to Claude Code (`claude auth status` should say you're logged in).
 2. Open `leanring-buddy.xcodeproj` in Xcode, pick your own team under Signing & Capabilities, and hit **Cmd + R**. The scheme is `leanring-buddy`; the typo is legacy and stays.
 
-To make a DMG for other people, run `scripts/build-shareable-dmg.sh`. It signs with your free Apple Development certificate (any Apple ID added to Xcode has one), so people see the one-time "Open Anyway" step above but keep their permissions across updates. The shared copy has its own bundle id (`com.yewe.mose`), separate from the one you run from Xcode, and only it updates itself; the copy you run from Xcode never does. Removing the warning needs a paid Apple Developer ID and notarization.
+To make a DMG for other people, run `scripts/build-shareable-dmg.sh`. It signs the app with your free Apple Development certificate (any Apple ID added to Xcode has one), so people see the one-time "Open Anyway" step above but keep their permissions across updates. The shared copy has its own bundle id (`com.yewe.mose`), separate from the one you run from Xcode, and only it updates itself; the copy you run from Xcode never does. Removing the warning needs a paid Apple Developer ID and notarization.
 
 Releases go through `scripts/publish-release.sh` (`build` a signed DMG, try it, then `publish`), which also adds the release to the update feed; `AGENTS.md` ("Releasing") has the details, including the Sparkle signing key to keep backed up.
 
