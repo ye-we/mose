@@ -13,6 +13,18 @@
 	<string>Mose needs screen recording access to see your screen and help you.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Mose uses speech recognition to understand you when you talk to it.</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUEnableSystemProfiling</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>$(MOSE_UPDATE_FEED_URL)</string>
+	<key>SUPublicEDKey</key>
+	<string>Ri3Y6i9Bw+aBGK22rgGOl3Njg5ADA8e0z0zuL8bXUoE=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>SUSendProfileInfo</key>
+	<false/>
 	<key>VoiceTranscriptionProvider</key>
 	<string>apple</string>
 </dict>

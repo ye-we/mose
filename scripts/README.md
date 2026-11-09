@@ -1,62 +1,25 @@
-# Release Scripts
+# Release scripts
 
-## `release.sh` — Ship a new version of makesomething
+## `publish-release.sh`: ship a new version of Mose
 
-Automates the full release pipeline: build → sign → DMG → notarize → Sparkle appcast → GitHub Release.
-
-### Quick start
+A release is two steps, so the DMG can be tried before anyone gets it:
 
 ```bash
-# Auto-bumps version and build number from the latest GitHub Release
-./scripts/release.sh
+scripts/publish-release.sh build 1.3 5              # set the versions, build and check the DMG, sign it for Sparkle
+scripts/publish-release.sh publish 1.3 notes.md     # commit, push, GitHub release, then add it to appcast.xml
 ```
 
-The script checks GitHub for the latest release (e.g. `v1.5`, build 6) and automatically bumps to `v1.6`, build 7. You'll see a confirmation prompt before anything runs.
+- `1.3` is `MARKETING_VERSION`; `5` is `CURRENT_PROJECT_VERSION`, the build number Sparkle compares. It must be higher than every build already in `appcast.xml`, or nobody is offered the update.
+- `build` makes `releases/Mose-1.3.dmg` with `build-shareable-dmg.sh`, checks it (versions, bundle id, update feed, public key, code signature, no `/Users/` paths or debug hooks, `hdiutil verify`) and signs it with Sparkle's `sign_update` (the key is in the login keychain, account `mose`).
+- `publish` adds the release to the feed only after the DMG is on GitHub and downloads back with the same SHA-256. `notes.md` is markdown, shown on the release page and in Mose's update window.
+- Back up the Sparkle key once: `generate_keys --account mose -x FILE`, kept somewhere safe. Without it no update can ever be signed again.
 
-### Override version or build
+`AGENTS.md` ("Releasing") has the full steps, including testing an update locally.
 
-```bash
-# Set a specific marketing version (auto-bumps build)
-./scripts/release.sh 2.0
+## `build-shareable-dmg.sh`
 
-# Set both marketing version and build number
-./scripts/release.sh 2.0 10
-```
+Builds the universal, signed release copy (`com.yewe.mose`) and its DMG. `VERSION_OVERRIDE`, `BUILD_NUMBER_OVERRIDE`, `UPDATE_FEED_URL` and `DMG_OUTPUT_FOLDER` build an older test copy pointed at a local feed without touching the project.
 
-### Safety
+## `appcast/`
 
-- **Duplicate detection**: If the tag already exists on GitHub, the script exits with an error and suggests what to do.
-- **Confirmation prompt**: Shows the version, build, and previous release before proceeding. Press `y` to continue.
-
-### What it does
-
-1. Fetches the latest release from GitHub to determine version + build
-2. Archives the app via `xcodebuild`
-3. Exports a signed `.app` with Developer ID
-4. Creates a DMG with the drag-to-Applications background
-5. Notarizes the DMG with Apple (Gatekeeper compliance)
-6. Signs the DMG with the Sparkle EdDSA key
-7. Generates `appcast.xml` for Sparkle auto-updates
-8. Creates a GitHub Release with the DMG attached
-9. Pushes the updated `appcast.xml` to the releases repo
-
-### One-time setup (prerequisites)
-
-1. **Xcode** with your Developer ID signing certificate
-2. **Homebrew tools**:
-   ```bash
-   brew install create-dmg gh
-   ```
-3. **GitHub CLI auth**:
-   ```bash
-   gh auth login
-   ```
-4. **Apple notarization credentials** (stored in Keychain):
-   ```bash
-   xcrun notarytool store-credentials "AC_PASSWORD" \
-       --apple-id YOUR_APPLE_ID \
-       --team-id YOUR_TEAM_ID
-   ```
-   You'll be prompted for an app-specific password (generate one at [appleid.apple.com](https://appleid.apple.com)).
-5. **Sparkle EdDSA key** — already generated and stored in Keychain (done during initial Sparkle setup)
-6. **Build the project in Xcode at least once** so SPM downloads Sparkle and the Sparkle CLI tools are available
+The `appcast` command (`add`, `list`, `empty`) that edits `appcast.xml`; `scripts/run-sketch-tests.sh` tests its pure part (`Appcast.swift`).

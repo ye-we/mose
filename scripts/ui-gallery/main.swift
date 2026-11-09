@@ -60,6 +60,7 @@ MainActor.assumeIsolated {
     ]
     let panelReady = manager { $0.claudeCodeSetupState = .ready(account); $0.hasMicrophonePermission = true; $0.hasAccessibilityPermission = true; $0.hasScreenRecordingPermission = true; $0.hasScreenContentPermission = true; $0.hasCompletedOnboarding = true }
     render(CompanionPanelView(companionManager: panelReady).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-ready")
+    render(CompanionPanelView(companionManager: panelReady, showsCheckForUpdates: true).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-release-copy")
     let panelJobs = manager { $0.claudeCodeSetupState = .ready(account); $0.hasMicrophonePermission = true; $0.hasAccessibilityPermission = true; $0.hasScreenRecordingPermission = true; $0.hasScreenContentPermission = true; $0.hasCompletedOnboarding = true; $0.backgroundAgentJobs = jobs; $0.voiceState = .responding; $0.selectedModel = "claude-haiku-4-5" }
     render(CompanionPanelView(companionManager: panelJobs).padding(24).background(Color(white: 0.35)), size: NSSize(width: 368, height: 0), name: "panel-with-tasks")
     // Step cards over a real app screenshot, as the overlay would show them

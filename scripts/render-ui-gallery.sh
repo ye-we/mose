@@ -29,6 +29,7 @@ swiftc -o "$gallery_binary_path" \
   "$repository_root/leanring-buddy/AgentConnectedApps.swift" \
   "$repository_root/leanring-buddy/ConnectedAppsWindow.swift" \
   "$repository_root/leanring-buddy/ConversationHistoryWindow.swift" \
+  "$repository_root/leanring-buddy/AppUpdatePolicy.swift" \
   "$repository_root/scripts/ui-gallery/Stubs.swift" \
   "$repository_root/scripts/ui-gallery/main.swift"
 

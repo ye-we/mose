@@ -10,7 +10,6 @@
 
 import ServiceManagement
 import SwiftUI
-import Sparkle
 
 @main
 struct leanring_buddyApp: App {
@@ -29,6 +28,10 @@ struct leanring_buddyApp: App {
                     NotificationCenter.default.post(name: .clickyShowPanel, object: nil)
                 }
                 .keyboardShortcut(",")
+                // Only the release copy updates itself (AppUpdatePolicy).
+                if AppUpdatePolicy.canThisCopyUpdateItself {
+                    CheckForUpdatesMenuButton(appUpdater: AppUpdater.shared)
+                }
             }
         }
     }
@@ -47,7 +50,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var connectedAppsWindowController: ConnectedAppsWindowController?
     private var openConnectedAppsObserver: NSObjectProtocol?
     private var showPanelObserver: NSObjectProtocol?
-    private var sparkleUpdaterController: SPUStandardUpdaterController?
+    private var checkForUpdatesObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🎯 Clicky: Starting...")
@@ -111,7 +114,15 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
                 setupWindowController.showSetup()
             }
         }
-        // startSparkleUpdater()
+
+        AppUpdater.shared.startIfThisCopyCanUpdateItself()
+        checkForUpdatesObserver = NotificationCenter.default.addObserver(
+            forName: .clickyCheckForUpdates,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in AppUpdater.shared.checkForUpdates() }
+        }
     }
 
     /// Clicking the Dock icon, or opening Clicky again (Spotlight, Finder,
@@ -128,20 +139,5 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         companionManager.stop()
-    }
-
-    private func startSparkleUpdater() {
-        let updaterController = SPUStandardUpdaterController(
-            startingUpdater: false,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
-        )
-        self.sparkleUpdaterController = updaterController
-
-        do {
-            try updaterController.updater.start()
-        } catch {
-            print("⚠️ Clicky: Sparkle updater failed to start: \(error)")
-        }
     }
 }

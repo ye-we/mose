@@ -25,12 +25,18 @@ You need macOS 14.2 or later and a Claude plan (Pro, Max, Team or Enterprise) fo
 
 1. [Download the DMG](https://github.com/ye-we/mose/releases/latest), open it and drag **Mose** into **Applications**.
 2. Open Mose. macOS says it can't verify the app, because it isn't notarized by Apple. Click **Done**.
-3. Open **System Settings → Privacy & Security**, scroll down to the message about Mose, click **Open Anyway** and confirm. You only do this once; updates open normally.
+3. Open **System Settings → Privacy & Security**, scroll down to the message about Mose, click **Open Anyway** and confirm. You only do this once; updates Mose installs itself open normally.
 4. The setup window walks you through signing in to Claude Code, the permissions it needs, and saying hi once.
 
 Rather use Terminal for step 3? `xattr -dr com.apple.quarantine /Applications/Mose.app` does the same thing.
 
 Mose sits in the Dock: click its icon for the panel, or right-click it to quit. There's also a small triangle in the menu bar that opens the same panel.
+
+### Updates
+
+From 1.2 on, Mose updates itself. It checks for a new version about once a day and offers it in a small window; one click installs it and Mose reopens with your settings, conversations and permissions as they were. **Check for Updates…** in the Mose menu, or **Check for updates** at the bottom of the panel, checks right away.
+
+On 1.1, 1.1.1 or 1.1.2? Those can't update themselves: [download 1.2](https://github.com/ye-we/mose/releases/latest) once and drag it over the old Mose in Applications. Your settings, conversations and permissions carry over. After that, updates come by themselves.
 
 ### Conversations, and what's kept
 
@@ -55,7 +61,9 @@ Mose has no server, and it looks at as little as it can.
 - **Keys:** the hotkey listener only sees Control, Option and fn going down and up, never what you type. While devil mode is driving, it also watches for Esc and for your mouse, so it can stop.
 - **What's kept** is text: your conversations and memory, in files on your Mac, which you can read and delete in History.
 
-Analytics and auto-updates are off.
+- **Updates:** a check downloads only the list of versions (`appcast.xml` in this repository) from GitHub, about once a day. No system profile is sent; GitHub sees an ordinary web request naming Mose's version. Every update is signed, and Mose refuses one whose signature doesn't match.
+
+Analytics are off.
 
 ### The permissions, and why
 
@@ -80,7 +88,9 @@ The panel (click Mose in the Dock) shows what Mose is doing and any background t
 1. Install and sign in to Claude Code (`claude auth status` should say you're logged in).
 2. Open `leanring-buddy.xcodeproj` in Xcode, pick your own team under Signing & Capabilities, and hit **Cmd + R**. The scheme is `leanring-buddy`; the typo is legacy and stays.
 
-To make a DMG for other people, run `scripts/build-shareable-dmg.sh`. It signs with your free Apple Development certificate (any Apple ID added to Xcode has one), so people see the one-time "Open Anyway" step above but keep their permissions across updates. The shared copy has its own bundle id (`com.yewe.mose`), separate from the one you run from Xcode. Removing the warning needs a paid Apple Developer ID and notarization.
+To make a DMG for other people, run `scripts/build-shareable-dmg.sh`. It signs with your free Apple Development certificate (any Apple ID added to Xcode has one), so people see the one-time "Open Anyway" step above but keep their permissions across updates. The shared copy has its own bundle id (`com.yewe.mose`), separate from the one you run from Xcode, and only it updates itself; the copy you run from Xcode never does. Removing the warning needs a paid Apple Developer ID and notarization.
+
+Releases go through `scripts/publish-release.sh` (`build` a signed DMG, try it, then `publish`), which also adds the release to the update feed; `AGENTS.md` ("Releasing") has the details, including the Sparkle signing key to keep backed up.
 
 Tests and checks, none of which need Xcode:
 
@@ -114,7 +124,8 @@ leanring-buddy/                  Swift source
   OverlayWindow.swift              the cursor overlay
 local-bridge/                    optional HTTP bridge for tests and ElevenLabs voices
 worker/                          optional Cloudflare Worker for API keys
-scripts/                         tests, checks, the icon and the DMG build
+scripts/                         tests, checks, the icon, the DMG build and releases
+appcast.xml                      the update feed Mose checks
 AGENTS.md                        the full architecture doc (CLAUDE.md links to it)
 ```
 

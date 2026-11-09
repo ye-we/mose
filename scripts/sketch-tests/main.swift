@@ -1200,5 +1200,110 @@ do {
     check(!DevilModeTakeoverRule.isMosesOwnEvent(eventSourceUserData: 0, eventSourceProcessIdentifier: 777, ownProcessIdentifier: 42), "so is one another app posted")
 }
 
+// MARK: Updates — which copy may update itself
+do {
+    let releaseFeed = "https://raw.githubusercontent.com/ye-we/mose/main/appcast.xml"
+    check(AppUpdatePolicy.canUpdateItself(bundleIdentifier: "com.yewe.mose", updateFeedURLString: releaseFeed), "the release copy with the GitHub feed updates itself")
+    check(!AppUpdatePolicy.canUpdateItself(bundleIdentifier: "com.yewe.clicky-local", updateFeedURLString: releaseFeed), "the Xcode copy never does, even with a feed")
+    check(!AppUpdatePolicy.canUpdateItself(bundleIdentifier: nil, updateFeedURLString: releaseFeed), "nor a copy without a bundle id")
+    check(!AppUpdatePolicy.canUpdateItself(bundleIdentifier: "com.yewe.mose", updateFeedURLString: ""), "an empty feed (a Debug build of the release id) is off")
+    check(!AppUpdatePolicy.canUpdateItself(bundleIdentifier: "com.yewe.mose", updateFeedURLString: nil), "no feed is off")
+    check(!AppUpdatePolicy.canUpdateItself(bundleIdentifier: "com.yewe.mose", updateFeedURLString: "$(MOSE_UPDATE_FEED_URL)"), "an unexpanded build setting is off")
+    check(AppUpdatePolicy.canUpdateItself(bundleIdentifier: "com.yewe.mose", updateFeedURLString: "http://127.0.0.1:8765/appcast.xml"), "a local test feed over http is allowed")
+    check(AppUpdatePolicy.canUpdateItself(bundleIdentifier: "com.yewe.mose", updateFeedURLString: " http://localhost:8765/appcast.xml\n"), "localhost too, whitespace trimmed")
+    check(!AppUpdatePolicy.canUpdateItself(bundleIdentifier: "com.yewe.mose", updateFeedURLString: "http://example.com/appcast.xml"), "plain http to another machine isn't")
+    check(!AppUpdatePolicy.canUpdateItself(bundleIdentifier: "com.yewe.mose", updateFeedURLString: "file:///tmp/appcast.xml"), "nor a file")
+    check(!AppUpdatePolicy.canUpdateItself(bundleIdentifier: "com.yewe.mose", updateFeedURLString: "https://"), "nor a URL without a host")
+}
+
+// MARK: Updates — the appcast feed
+do {
+    let emptyFeed = Appcast.emptyFeedText(title: "Mose", websiteURL: "https://github.com/ye-we/mose")
+    check((try? Appcast.itemSummaries(inFeedText: emptyFeed)) == [], "an empty feed parses with no releases")
+
+    let publicationDate = Date(timeIntervalSince1970: 1_794_232_980) // Mon, 09 Nov 2026 14:03:00 +0000
+    check(Appcast.rssDateText(publicationDate) == "Mon, 09 Nov 2026 14:03:00 +0000", "dates are RFC 822 in UTC, in English")
+
+    let signUpdateOutput = #"sparkle:edSignature="pZ7k+abc/def==" length="9441234""#
+    let signatureAndLength = Appcast.signatureAndLength(fromSignUpdateOutput: signUpdateOutput + "\n")
+    check(signatureAndLength?.edSignature == "pZ7k+abc/def==" && signatureAndLength?.lengthInBytes == 9_441_234, "sign_update's output gives the signature and length")
+    check(Appcast.signatureAndLength(fromSignUpdateOutput: "ERROR: no key") == nil, "an error from sign_update gives nothing")
+    check(Appcast.signatureAndLength(fromSignUpdateOutput: #"sparkle:edSignature="" length="12""#) == nil, "an empty signature gives nothing")
+
+    let release12 = AppcastRelease(
+        shortVersionString: "1.2",
+        buildNumber: 4,
+        publicationDate: publicationDate,
+        dmgURL: "https://github.com/ye-we/mose/releases/download/v1.2/Mose-1.2.dmg",
+        dmgLengthInBytes: 9_441_234,
+        edSignature: "pZ7k+abc/def==",
+        minimumSystemVersion: "14.2",
+        releaseNotesPageURL: "https://github.com/ye-we/mose/releases/tag/v1.2",
+        releaseNotesMarkdown: "Mose now **updates itself**.\n\n- One click & done <3\n- a ]]> in the notes\n"
+    )
+    let feedWith12 = try! Appcast.feedText(emptyFeed, addingItemFor: release12)
+    check(feedWith12.contains("<sparkle:version>4</sparkle:version>") && feedWith12.contains("<sparkle:shortVersionString>1.2</sparkle:shortVersionString>"), "the item has the build number and the version")
+    check(feedWith12.contains("<sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>"), "and the minimum macOS")
+    check(feedWith12.contains(#"<enclosure url="https://github.com/ye-we/mose/releases/download/v1.2/Mose-1.2.dmg" length="9441234" type="application/octet-stream" sparkle:edSignature="pZ7k+abc/def=="/>"#), "and the DMG with its length and signature")
+    check(feedWith12.contains("<link>https://github.com/ye-we/mose/releases/tag/v1.2</link>"), "and a link to the release notes")
+    check(feedWith12.contains(#"<description sparkle:format="markdown"><![CDATA["#) && feedWith12.contains("\n- One click & done <3\n"), "the notes are markdown, unescaped, without indentation")
+    check((try? Appcast.itemSummaries(inFeedText: feedWith12)) == [AppcastItemSummary(shortVersionString: "1.2", buildNumber: "4")], "the feed reads back with one release")
+
+    let feedDocument = try! XMLDocument(xmlString: feedWith12, options: [])
+    let descriptionText = (try? feedDocument.nodes(forXPath: "/rss/channel/item/description").first?.stringValue) ?? nil
+    check(descriptionText?.contains("a ]]> in the notes") == true && descriptionText?.contains("updates itself") == true, "a ]]> in the notes can't break out of CDATA")
+
+    var release13 = release12
+    release13.shortVersionString = "1.3"
+    release13.buildNumber = 5
+    release13.dmgURL = "https://github.com/ye-we/mose/releases/download/v1.3/Mose-1.3.dmg"
+    let feedWith13 = try! Appcast.feedText(feedWith12, addingItemFor: release13)
+    check((try? Appcast.itemSummaries(inFeedText: feedWith13).map(\.buildNumber)) == ["5", "4"], "a newer release goes first")
+    check(feedWith13.contains("        <item>\n            <title>Version 1.3</title>"), "with the feed's indentation")
+
+    var sameBuild = release13
+    sameBuild.shortVersionString = "1.3.1"
+    do {
+        _ = try Appcast.feedText(feedWith13, addingItemFor: sameBuild)
+        check(false, "a build number that didn't go up is refused")
+    } catch {
+        check((error as? AppcastError) == .buildNumberNotNew(newBuildNumber: 5, highestExistingBuildNumber: 5), "a build number that didn't go up is refused")
+    }
+    var lowerBuild = release13
+    lowerBuild.shortVersionString = "1.4"
+    lowerBuild.buildNumber = 3
+    check((try? Appcast.feedText(feedWith13, addingItemFor: lowerBuild)) == nil, "so is a lower one")
+    var sameVersion = release13
+    sameVersion.buildNumber = 9
+    do {
+        _ = try Appcast.feedText(feedWith13, addingItemFor: sameVersion)
+        check(false, "a version already in the feed is refused")
+    } catch {
+        check((error as? AppcastError) == .versionAlreadyListed("1.3"), "a version already in the feed is refused")
+    }
+    var unsigned = release13
+    unsigned.shortVersionString = "1.4"
+    unsigned.buildNumber = 6
+    unsigned.edSignature = " "
+    check((try? Appcast.feedText(feedWith13, addingItemFor: unsigned)) == nil, "an unsigned release is refused")
+    check((try? Appcast.itemSummaries(inFeedText: "<rss><nochannel/></rss>")) == nil, "a file that isn't a feed is refused")
+
+    var escaped = release12
+    escaped.shortVersionString = "1.2 <beta> & \"more\""
+    escaped.dmgURL = "https://example.com/a?b=1&c=\"2\""
+    let escapedItem = try! Appcast.itemText(for: escaped)
+    check(escapedItem.contains("<title>Version 1.2 &lt;beta&gt; &amp; \"more\"</title>") && escapedItem.contains(#"url="https://example.com/a?b=1&amp;c=&quot;2&quot;""#), "text and attributes are escaped")
+
+    // The real appcast.xml in the repository must always be a valid feed
+    let repositoryFeedPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
+    if let repositoryFeedText = try? String(contentsOfFile: repositoryFeedPath, encoding: .utf8) {
+        let repositoryItemSummaries = try? Appcast.itemSummaries(inFeedText: repositoryFeedText)
+        check(repositoryItemSummaries != nil, "appcast.xml is a valid feed")
+        check(!repositoryFeedText.contains("makesomething") && !repositoryFeedText.contains("julianjear"), "appcast.xml isn't upstream's old feed")
+        let repositoryBuildNumbers = (repositoryItemSummaries ?? []).compactMap { Int($0.buildNumber) }
+        check(repositoryBuildNumbers == repositoryBuildNumbers.sorted(by: >) && Set(repositoryBuildNumbers).count == repositoryBuildNumbers.count, "its build numbers go down from the newest, no repeats")
+    }
+}
+
 print("\(checkCount - failureCount)/\(checkCount) checks passed")
 exit(failureCount == 0 ? 0 : 1)

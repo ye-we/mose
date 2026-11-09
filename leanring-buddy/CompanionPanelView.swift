@@ -12,6 +12,8 @@ import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
+    /// Only the release copy updates itself; the UI gallery turns it on to draw it.
+    var showsCheckForUpdates: Bool = AppUpdatePolicy.canThisCopyUpdateItself
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -163,6 +165,12 @@ struct CompanionPanelView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(DS.Colors.nextStepInk.opacity(0.28), lineWidth: 1)
         )
+    }
+
+    /// Sparkle answers in its own window, so the panel gets out of the way.
+    private func checkForUpdates() {
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        NotificationCenter.default.post(name: .clickyCheckForUpdates, object: nil)
     }
 
     private func openSetup() {
@@ -366,6 +374,10 @@ struct CompanionPanelView: View {
         HStack(spacing: 4) {
             Button("Setup") { openSetup() }
                 .buttonStyle(PanelFooterButtonStyle())
+            if showsCheckForUpdates {
+                Button("Check for updates") { checkForUpdates() }
+                    .buttonStyle(PanelFooterButtonStyle())
+            }
             Spacer()
             Button("Quit \(AppIdentity.displayName)") { NSApp.terminate(nil) }
                 .buttonStyle(PanelFooterButtonStyle())
