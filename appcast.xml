@@ -5,5 +5,23 @@
         <link>https://github.com/ye-we/mose</link>
         <description>New versions of Mose. The app checks this feed about once a day.</description>
         <language>en</language>
+        <item>
+            <title>Version 1.2</title>
+            <link>https://github.com/ye-we/mose/releases/tag/v1.2</link>
+            <pubDate>Mon, 09 Nov 2026 17:04:39 +0000</pubDate>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>1.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[
+**Mose now updates itself.**
+
+From this version on, Mose checks for a new version about once a day and offers it in a small window. One click installs it, and Mose reopens on its own with your settings, conversations and permissions as they were. You can also check any time with **Check for Updates…** in the Mose menu, or **Check for updates** at the bottom of Mose's panel.
+
+**On 1.1, 1.1.1 or 1.1.2?** Those can't update themselves, so this one update is by hand: download **Mose-1.2.dmg** below, open it and drag Mose into Applications, replacing the old one. Your settings, conversations and permissions carry over. If macOS says it can't verify Mose, allow it once more under System Settings → Privacy & Security → Open Anyway. After this, updates come by themselves.
+
+A check only downloads the list of versions from this GitHub repository, and no system profile is sent. Every update is signed, and Mose refuses one whose signature doesn't match.
+]]></description>
+            <enclosure url="https://github.com/ye-we/mose/releases/download/v1.2/Mose-1.2.dmg" length="8366665" type="application/octet-stream" sparkle:edSignature="1P6GPUnus+BLALmQ40DnxznkfGS54bd9XiLAhsQi9dvMGc0c5qUOs4ybTysj8TwZIjAZCpMbDXh4FSsBoeJ/AA=="/>
+        </item>
     </channel>
 </rss>
